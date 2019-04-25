@@ -16,7 +16,7 @@ import * as Yaz0 from '../compression/Yaz0';
 import * as BCSV from '../luigis_mansion/bcsv';
 import * as UI from '../ui';
 import { mat4, quat, vec3 } from 'gl-matrix';
-import { BMD, BRK, BTK, BCK, LoopMode } from './j3d';
+import { BMD, BRK, BTK, BCK, LoopMode, BVA } from './j3d';
 import { GfxBlendMode, GfxBlendFactor, GfxDevice, GfxRenderPass, GfxHostAccessPass, GfxBindingLayoutDescriptor, GfxProgram, GfxSampler, GfxTexFilterMode, GfxMipFilterMode, GfxWrapMode, GfxRenderPassDescriptor, GfxLoadDisposition } from '../gfx/platform/GfxPlatform';
 import AnimationController from '../AnimationController';
 import { fullscreenMegaState } from '../gfx/helpers/GfxMegaStateDescriptorHelpers';
@@ -795,7 +795,7 @@ class ModelCache {
             if (this.destroyed)
                 return null;
             const rarc = RARC.parse(buffer);
-            const bmd = rarc.findFileData(modelFilename) !== null ? BMD.parse(rarc.findFileData(modelFilename)) : null;
+            const bmd = BMD.parse(assertExists(rarc.findFileData(modelFilename)));
             const bmdModel = new BMDModel(device, renderHelper, bmd, null);
             textureHolder.addJ3DTextures(device, bmd);
             this.archiveCache.set(archivePath, rarc);
@@ -926,6 +926,14 @@ class SMGSpawner {
         }
     }
 
+    private hasIndirectTexture(bmdModel: BMDModel): boolean {
+        const tex1Samplers = bmdModel.bmd.tex1.samplers;
+        for (let i = 0; i < tex1Samplers.length; i++)
+            if (tex1Samplers[i].name === 'IndDummy')
+                return true;
+        return false;
+    }
+
     public spawnObject(device: GfxDevice, zone: ZoneNode, layer: number, objinfo: ObjInfo, modelMatrixBase: mat4): void {
         const spawnGraph = (arcName: string, tag: SceneGraphTag = SceneGraphTag.Normal, animOptions: AnimOptions | null | undefined = undefined) => {
             const arcPath = `${this.pathBase}/ObjectData/${arcName}.arc`;
@@ -934,6 +942,9 @@ class SMGSpawner {
                 if (bmdModel === null)
                     return null;
 
+                if (this.hasIndirectTexture(bmdModel))
+                    tag = SceneGraphTag.Indirect;
+
                 // Trickery.
                 const rarc = this.modelCache.archiveCache.get(arcPath);
 
@@ -941,15 +952,14 @@ class SMGSpawner {
                 modelInstance.name = `${objinfo.objName} ${objinfo.objId}`;
 
                 if (tag === SceneGraphTag.Skybox) {
-                    // Kill translation and shrink a bit. Need to figure out how the game does skyboxen.
-                    const skyboxScale = 0.5;
-                    mat4.scale(objinfo.modelMatrix, objinfo.modelMatrix, [skyboxScale, skyboxScale, skyboxScale]);
+                    mat4.scale(objinfo.modelMatrix, objinfo.modelMatrix, [.5, .5, .5]);
 
+                    // Kill translation. Need to figure out how the game does skyboxen.
                     objinfo.modelMatrix[12] = 0;
                     objinfo.modelMatrix[13] = 0;
                     objinfo.modelMatrix[14] = 0;
 
-                    modelInstance.setIsSkybox(true);
+                    modelInstance.isSkybox = true;
                     modelInstance.passMask = SMGPass.SKYBOX;
                 } else if (tag === SceneGraphTag.Indirect) {
                     modelInstance.passMask = SMGPass.INDIRECT;
@@ -992,8 +1002,9 @@ class SMGSpawner {
         const name = objinfo.objName;
         switch (objinfo.objName) {
 
-        // Skyboxen.
+            // Skyboxen.
         case 'BeyondSummerSky':
+        case 'BeyondHorizonSky':
         case 'BeyondGalaxySky':
         case 'CloudSky':
         case 'HalfGalaxySky':
@@ -1004,27 +1015,58 @@ class SMGSpawner {
         case 'VROrbit':
         case 'DesertSky':
         case 'GoodWeatherSky':
+        case 'PhantomSky':
+        case 'VRSandwichSun':
             spawnGraph(name, SceneGraphTag.Skybox);
             break;
 
-        case 'FlagPeachCastleA':
-        case 'FlagPeachCastleB':
-        case 'FlagPeachCastleC':
-            // Archives just contain the textures. Mesh geometry appears to be generated at runtime by the game.
-            return;
-        case 'ElectricRail':
-            // Covers the path with the rail -- will require special spawn logic.
-            return;
         case 'PeachCastleTownBeforeAttack':
             spawnGraph('PeachCastleTownBeforeAttack', SceneGraphTag.Normal);
             spawnGraph('PeachCastleTownBeforeAttackBloom', SceneGraphTag.Bloom);
             break;
+
+        case 'PeachCastleTownAfterAttack':
+            // Don't show. We want the pristine town state.
+            return;
+
+        case 'ElectricRail':
+            // Covers the path with the rail -- will require special spawn logic.
+            return;
+
         case 'FlowerGroup':
         case 'FlowerBlueGroup':
         case 'ShootingStar':
         case 'MeteorCannon':
-            // Archives missing. Again, runtime mesh?
+        case 'Plant':
+        case 'WaterPlant':
+        case 'SwingRope':
+        case 'Creeper':
+        case 'TrampleStar':
+        case 'FlagPeachCastleA':
+        case 'FlagPeachCastleB':
+        case 'FlagPeachCastleC':
+        case 'FlagKoopaA':
+        case 'FlagKoopaB':
+        case 'FlagKoopaC':
+        case 'FlagRaceA':
+        case 'FlagRaceB':
+        case 'FlagRaceC':
+        case 'FlagTamakoro':
+            // Archives just contain the textures. Mesh geometry appears to be generated at runtime by the game.
             return;
+
+        case 'InvisibleWall10x10':
+        case 'InvisibleWall10x20':
+        case 'InvisibleWallGCapture10x20':
+        case 'InvisibleWaterfallTwinFallLake':
+            // Invisible.
+            return;
+
+        case 'LavaMiniSunPlanet':
+            // XXX(jstpierre): This has a texture named LavaSun which will corrupt the texture holder, so just
+            // prevent it spawning for now.
+            return;
+
         case 'TimerSwitch':
         case 'SwitchSynchronizerReverse':
         case 'PrologueDirector':
@@ -1033,6 +1075,7 @@ class SMGSpawner {
         case 'LuigiEvent':
             // Logic objects.
             return;
+
         case 'AstroCore':
             spawnGraph(name, SceneGraphTag.Normal, { bck: 'revival4.bck', brk: 'revival4.brk', btk: 'astrocore.btk' });
             break;
@@ -1096,9 +1139,8 @@ class SMGSpawner {
         // SMG2
         case 'Moc':
             spawnGraph(`Moc`, SceneGraphTag.Normal, { bck: 'turn.bck' }).then(([node, rarc]) => {
-                node.modelInstance.setShapeVisible(1, false);
-                node.modelInstance.setShapeVisible(2, false);
-                node.modelInstance.setShapeVisible(3, false);
+                const bva = BVA.parse(rarc.findFileData(`FaceA.bva`));
+                node.modelInstance.bindVAF1(bva.vaf1);
             });
             break;
         case 'PlantC':
@@ -1114,6 +1156,10 @@ class SMGSpawner {
             // Presumably this uses the "current world map". I chose 03, because I like it.
             spawnGraph(`WorldMap03Sky`, SceneGraphTag.Skybox);
             break;
+
+        case 'MarioFacePlanetPrevious':
+            // The "old" face planet that Lubba discovers. We don't want it in sight, just looks ugly.
+            return;
 
         default:
             spawnDefault(name);

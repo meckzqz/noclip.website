@@ -6,7 +6,7 @@ import * as RARC from './rarc';
 
 import ArrayBufferSlice from '../ArrayBufferSlice';
 import Progressable from '../Progressable';
-import { readString, assert, makeTextDecoder } from '../util';
+import { readString, assert, getTextDecoder } from '../util';
 import { fetchData } from '../fetch';
 
 import { J3DTextureHolder, BMDModelInstance, BMDModel } from './render';
@@ -22,7 +22,7 @@ import { GfxDevice, GfxHostAccessPass, GfxRenderPass } from '../gfx/platform/Gfx
 import { colorNew } from '../Color';
 import { RENDER_HACKS_ICON } from '../bk/scenes';
 
-const sjisDecoder = makeTextDecoder('sjis');
+const sjisDecoder = getTextDecoder('sjis');
 
 function unpack(buffer: ArrayBufferSlice, sig: string): any[] {
     const view = buffer.createDataView();
@@ -377,7 +377,7 @@ export class SunshineSceneDesc implements Viewer.SceneDesc {
         const bmtFile = rarc.findFile(`${basename}.bmt`);
         const modelInstance = createModelInstance(device, renderHelper, textureHolder, bmdFile, btkFile, brkFile, bckFile, bmtFile);
         modelInstance.name = basename;
-        modelInstance.setIsSkybox(isSkybox);
+        modelInstance.isSkybox = isSkybox;
         modelInstance.passMask = passMask;
         return modelInstance;
     }
@@ -425,8 +425,8 @@ export class SunshineSceneDesc implements Viewer.SceneDesc {
     private createSceneBinObjects(device: GfxDevice, renderHelper: GXRenderHelperGfx, textureHolder: J3DTextureHolder, rarc: RARC.RARC, obj: SceneBinObj): BMDModelInstance[] {
         function flatten<T>(L: T[][]): T[] {
             const R: T[] = [];
-            for (const Ts of L)
-                R.push.apply(R, Ts);
+            for (let i = 0; i < L.length; i++)
+                R.push.apply(R, L[i]);
             return R;
         }
 

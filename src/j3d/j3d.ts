@@ -5,7 +5,7 @@ import { mat4, quat, vec3 } from 'gl-matrix';
 
 import ArrayBufferSlice from '../ArrayBufferSlice';
 import { Endianness } from '../endian';
-import { assert, readString } from '../util';
+import { assert, readString, assertExists } from '../util';
 
 import { compileVtxLoader, GX_Array, GX_VtxAttrFmt, GX_VtxDesc, LoadedVertexData, LoadedVertexLayout } from '../gx/gx_displaylist';
 import * as GX from '../gx/gx_enum';
@@ -14,6 +14,7 @@ import AnimationController from '../AnimationController';
 import { ColorKind } from '../gx/gx_render';
 import { AABB } from '../Geometry';
 import { getPointHermite } from '../Spline';
+import { Graph, cv } from '../DebugJunk';
 
 function readStringTable(buffer: ArrayBufferSlice, offs: number): string[] {
     const view = buffer.createDataView(offs);
@@ -408,8 +409,8 @@ function readJNT1Chunk(buffer: ArrayBufferSlice): JNT1 {
 // A packet is a series of draw calls that use the same matrix table.
 interface Packet {
     matrixTable: Uint16Array;
-    firstTriangle: number;
-    numTriangles: number;
+    indexOffset: number;
+    indexCount: number;
     loadedVertexData: LoadedVertexData;
 }
 
@@ -494,7 +495,7 @@ function readSHP1Chunk(buffer: ArrayBufferSlice, bmd: BMD): SHP1 {
         let packetIdx = packetTableOffs + (firstPacket * 0x08);
         const packets: Packet[] = [];
 
-        let totalTriangleCount = 0;
+        let totalIndexCount = 0;
         for (let j = 0; j < packetCount; j++) {
             const packetSize = view.getUint32(packetIdx + 0x00);
             const packetStart = primDataOffs + view.getUint32(packetIdx + 0x04);
@@ -511,11 +512,11 @@ function readSHP1Chunk(buffer: ArrayBufferSlice, bmd: BMD): SHP1 {
             const subBuffer = buffer.subarray(srcOffs, packetSize);
             const loadedVertexData = vtxLoader.runVertices(vtxArrays, subBuffer);
 
-            const firstTriangle = totalTriangleCount;
-            const numTriangles = loadedVertexData.totalTriangleCount;
-            totalTriangleCount += numTriangles;
+            const indexOffset = totalIndexCount;
+            const indexCount = loadedVertexData.totalIndexCount;
+            totalIndexCount += indexCount;
 
-            packets.push({ matrixTable, firstTriangle, numTriangles, loadedVertexData });
+            packets.push({ matrixTable, indexOffset, indexCount, loadedVertexData });
             packetIdx += 0x08;
         }
 
@@ -1392,7 +1393,7 @@ function translateAnimationTrack(data: Float32Array | Int16Array, scale: number,
 //#endregion
 
 //#region TTK1
-interface UVAnimationEntry {
+interface TTK1AnimationEntry {
     materialName: string;
     remapIndex: number;
     texGenIndex: number;
@@ -1411,7 +1412,7 @@ interface UVAnimationEntry {
 }
 
 export interface TTK1 extends AnimationBase {
-    uvAnimationEntries: UVAnimationEntry[];
+    uvAnimationEntries: TTK1AnimationEntry[];
 }
 
 function readTTK1Chunk(buffer: ArrayBufferSlice): TTK1 {
@@ -1450,7 +1451,7 @@ function readTTK1Chunk(buffer: ArrayBufferSlice): TTK1 {
         return translateAnimationTrack(data, scale, count, index, tangent);
     }
 
-    const uvAnimationEntries: UVAnimationEntry[] = [];
+    const uvAnimationEntries: TTK1AnimationEntry[] = [];
     for (let i = 0; i < animationCount; i++) {
         const materialName = materialNameTable[i];
         const remapIndex = view.getUint16(remapTableOffs + i * 0x02);
@@ -1480,7 +1481,7 @@ function readTTK1Chunk(buffer: ArrayBufferSlice): TTK1 {
 }
 
 export class TTK1Animator {
-    constructor(public animationController: AnimationController, private ttk1: TTK1, private animationEntry: UVAnimationEntry) {}
+    constructor(public animationController: AnimationController, private ttk1: TTK1, private animationEntry: TTK1AnimationEntry) {}
 
     public calcTexMtx(dst: mat4): void {
         const frame = this.animationController.getTimeInFrames();
@@ -1527,7 +1528,7 @@ export class BTK {
 //#endregion
 
 //#region TRK1
-interface PaletteAnimationEntry {
+interface TRK1AnimationEntry {
     materialName: string;
     remapIndex: number;
     colorKind: ColorKind;
@@ -1538,7 +1539,7 @@ interface PaletteAnimationEntry {
 }
 
 export interface TRK1 extends AnimationBase {
-    animationEntries: PaletteAnimationEntry[];
+    animationEntries: TRK1AnimationEntry[];
 }
 
 function readTRK1Chunk(buffer: ArrayBufferSlice): TRK1 {
@@ -1582,7 +1583,7 @@ function readTRK1Chunk(buffer: ArrayBufferSlice): TRK1 {
         return translateAnimationTrack(data, 1 / 0xFF, count, index, tangent);
     }
 
-    const animationEntries: PaletteAnimationEntry[] = [];
+    const animationEntries: TRK1AnimationEntry[] = [];
 
     const registerRTable = buffer.createTypedArray(Int16Array, registerROffs, registerRCount, Endianness.BIG_ENDIAN);
     const registerGTable = buffer.createTypedArray(Int16Array, registerGOffs, registerGCount, Endianness.BIG_ENDIAN);
@@ -1626,7 +1627,9 @@ function readTRK1Chunk(buffer: ArrayBufferSlice): TRK1 {
 }
 
 export class TRK1Animator {
-    constructor(public animationController: AnimationController, private trk1: TRK1, private animationEntry: PaletteAnimationEntry) {}
+    private graph: Graph | null = null;
+
+    constructor(public animationController: AnimationController, private trk1: TRK1, private animationEntry: TRK1AnimationEntry) {}
 
     public calcColor(dst: GX_Material.Color): void {
         const frame = this.animationController.getTimeInFrames();
@@ -1636,6 +1639,17 @@ export class TRK1Animator {
         dst.g = sampleAnimationData(this.animationEntry.g, animFrame);
         dst.b = sampleAnimationData(this.animationEntry.b, animFrame);
         dst.a = sampleAnimationData(this.animationEntry.a, animFrame);
+
+        if (this.graph !== null) {
+            this.graph.clear();
+            this.graph.graphF('black', (t) => sampleAnimationData(this.animationEntry.a, t), this.trk1.duration);
+            this.graph.marker('red', animFrame / this.trk1.duration);
+            this.graph.hline('green', 0);
+        }
+    }
+
+    public viz(): void {
+        this.graph = new Graph(cv());
     }
 }
 
@@ -1778,5 +1792,87 @@ export class BCK {
     }
 
     public ank1: ANK1;
+}
+//#endregion
+
+//#region VAF1
+
+// TODO(jstpierre): Add a more memory efficient version than this?
+export interface ShapeVisibilityEntry {
+    shapeVisibility: boolean[];
+}
+
+export interface VAF1 extends AnimationBase {
+    visibilityAnimationTracks: ShapeVisibilityEntry[];
+}
+
+function readVAF1Chunk(buffer: ArrayBufferSlice): VAF1 {
+    const view = buffer.createDataView();
+    const loopMode: LoopMode = view.getUint8(0x08);
+    const duration = view.getUint16(0x0A);
+    const visibilityAnimationTableCount = view.getUint16(0x0C);
+    const showTableCount = view.getUint16(0x0E);
+    const visibilityAnimationTableOffs = view.getUint32(0x10);
+    const showTableOffs = view.getUint32(0x14);
+
+    let animationTableIdx = visibilityAnimationTableOffs;
+
+    const shapeVisibilityEntries: ShapeVisibilityEntry[] = [];
+    for (let i = 0; i < visibilityAnimationTableCount; i++) {
+        const showFirstIndex = view.getUint16(animationTableIdx + 0x00);
+        const showCount = view.getUint16(animationTableIdx + 0x02);
+
+        const shapeVisibility: boolean[] = [];
+        for (let j = 0; j < showCount; j++) {
+            const show = !!view.getUint8(showTableOffs + showFirstIndex + j);
+            shapeVisibility.push(show);
+        }
+
+        shapeVisibilityEntries.push({ shapeVisibility });
+        animationTableIdx += 0x04;
+    }
+
+    return { loopMode, duration, visibilityAnimationTracks: shapeVisibilityEntries };
+}
+
+export class VAF1Animator { 
+    constructor(public animationController: AnimationController, public vaf1: VAF1) {}
+
+    public calcVisibility(shapeIndex: number): boolean {
+        const entry = assertExists(this.vaf1.visibilityAnimationTracks[shapeIndex]);
+
+        // Empty tracks are visible by default.
+        if (entry.shapeVisibility.length === 0)
+            return true;
+
+        const frame = this.animationController.getTimeInFrames();
+        const animFrame = getAnimFrame(this.vaf1, frame);
+
+        // animFrame can return a partial keyframe, but visibility information is frame-specific.
+        // Resolve this by treating this as a stepped track, floored. e.g. 15.9 is keyframe 15.
+
+        return entry.shapeVisibility[(animFrame | 0)];
+    }
+}
+
+export function bindVAF1Animator(animationController: AnimationController, vaf1: VAF1): VAF1Animator {
+    return new VAF1Animator(animationController, vaf1);
+}
+//#endregion
+
+//#region BVA
+export class BVA {
+    public static parse(buffer: ArrayBufferSlice): BVA {
+        const bva = new BVA();
+
+        const j3d = new J3DFileReaderHelper(buffer);
+        assert(j3d.magic === 'J3D1bva1');
+
+        bva.vaf1 = readVAF1Chunk(j3d.nextChunk('VAF1'));
+
+        return bva;
+    }
+
+    public vaf1: VAF1;
 }
 //#endregion

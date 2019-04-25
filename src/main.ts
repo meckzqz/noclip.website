@@ -11,7 +11,7 @@ if (module.hot) {
     });
 }
 
-import { SceneDesc, SceneGroup, Viewer, SceneGfx, getSceneDescs, InitErrorCode, initializeViewer, makeErrorUI, makeErrorMessageUI } from './viewer';
+import { SceneDesc, SceneGroup, Viewer, SceneGfx, getSceneDescs, InitErrorCode, initializeViewer, makeErrorUI } from './viewer';
 
 import ArrayBufferSlice from './ArrayBufferSlice';
 import Progressable from './Progressable';
@@ -30,8 +30,6 @@ import * as MDL0 from './mdl0/scenes';
 import * as OOT3D from './oot3d/oot3d_scenes';
 import * as MM3D from './oot3d/mm3d_scenes';
 import * as LM3D from './oot3d/lm3d_scenes';
-import * as Grezzo3DS from './oot3d/scenes';
-import * as FRES from './fres/scenes';
 import * as SPL from './fres/splatoon_scenes';
 import * as DKSIV from './dksiv/scenes';
 import * as MP1 from './metroid_prime/scenes';
@@ -44,19 +42,20 @@ import * as TTYD from './ttyd/scenes';
 import * as SPM from './ttyd/spm_scenes';
 import * as MKDS from './nns_g3d/mkds_scenes';
 import * as NSMBDS from './nns_g3d/nsmbds_scenes';
-import * as NNS_G3D from './nns_g3d/scenes';
+import * as KH from './kh/scenes';
 import * as Z_BOTW from './z_botw/scenes';
 import * as SMO from './fres_nx/smo_scenes';
 import * as PSY from './psychonauts/scenes';
 import * as DKS from './dks/scenes';
-import * as J3D from './j3d/scenes';
 import * as RTDL from './rres/rtdl_scenes';
+import * as SONIC_COLORS from './rres/sonic_colors_scenes';
+import * as KLONOA from './rres/klonoa_scenes';
+import * as KATAMARI_DAMACY from './katamari_damacy/scenes';
 
 import { UI, SaveStatesAction } from './ui';
 import { serializeCamera, deserializeCamera, FPSCameraController } from './Camera';
 import { hexdump } from './util';
 import { downloadBlob, downloadBufferSlice, downloadBuffer } from './fetch';
-import { GfxDevice } from './gfx/platform/GfxPlatform';
 import { ZipFileEntry, makeZipFile } from './ZipFile';
 import { TextureHolder } from './TextureHolder';
 import { atob, btoa } from './Ascii85';
@@ -66,16 +65,18 @@ import { RenderStatistics } from './RenderStatistics';
 import { gfxDeviceGetImpl } from './gfx/platform/GfxPlatformWebGL2';
 import { Color } from './Color';
 import { standardFullClearRenderPassDescriptor } from './gfx/helpers/RenderTargetHelpers';
+import { DroppedFileSceneDesc } from './FileDrops';
 
 const sceneGroups = [
     "Wii",
     MKWII.sceneGroup,
+    RTDL.sceneGroup,
+    KLONOA.sceneGroup,
     SMG1.sceneGroup,
     SMG2.sceneGroup,
     SPM.sceneGroup,
     ZSS.sceneGroup,
     ELB.sceneGroup,
-    RTDL.sceneGroup,
     "GameCube",
     LM.sceneGroup,
     MKDD.sceneGroup,
@@ -93,10 +94,13 @@ const sceneGroups = [
     LM3D.sceneGroup,
     MM3D.sceneGroup,
     OOT3D.sceneGroup,
+    "PlayStation 2",
+    KATAMARI_DAMACY.sceneGroup,
+    KH.sceneGroup,
     "Other",
     DKSIV.sceneGroup,
-    MDL0.sceneGroup,
     BK.sceneGroup,
+    MDL0.sceneGroup,
     "Experimental",
     PSY.sceneGroup,
     DKCR.sceneGroup,
@@ -105,69 +109,11 @@ const sceneGroups = [
     Z_BOTW.sceneGroup,
     DKS.sceneGroup,
     THUG2.sceneGroup,
+    SONIC_COLORS.sceneGroup,
 ];
-
-function loadFileAsPromise(file: File): Progressable<ArrayBufferSlice> {
-    const request = new FileReader();
-    request.readAsArrayBuffer(file);
-
-    const p = new Promise<ArrayBufferSlice>((resolve, reject) => {
-        request.onload = () => {
-            const buffer: ArrayBuffer = request.result as ArrayBuffer;
-            const slice = new ArrayBufferSlice(buffer);
-            resolve(slice);
-        };
-        request.onerror = () => {
-            reject();
-        };
-        request.onprogress = (e) => {
-            if (e.lengthComputable)
-                pr.setProgress(e.loaded / e.total);
-        };
-    });
-    const pr = new Progressable<ArrayBufferSlice>(p);
-    return pr;
-}
 
 function blobToArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
     return new Response(blob).arrayBuffer();
-}
-
-class DroppedFileSceneDesc implements SceneDesc {
-    public id: string;
-    public name: string;
-
-    constructor(public file: File, public files: File[]) {
-        this.id = file.name;
-        this.name = file.name;
-    }
-
-    public createScene(device: GfxDevice): Progressable<SceneGfx> {
-        const file = this.file;
-
-        if (file.name.endsWith('.zar') || file.name.endsWith('.gar'))
-            return loadFileAsPromise(file).then((buffer) => Grezzo3DS.createSceneFromZARBuffer(device, buffer));
-
-        if (file.name.endsWith('.arc') || file.name.endsWith('.carc'))
-            return loadFileAsPromise(file).then((buffer) => ELB.createBasicRRESRendererFromU8Archive(device, buffer));
-
-        if (file.name.endsWith('.brres')) {
-            return Progressable.all([...this.files].map((f) => loadFileAsPromise(f))).then((buffers) => {
-                return ELB.createBasicRRESRendererFromBRRES(device, buffers);
-            });
-        }
-
-        if (file.name.endsWith('.bfres'))
-            return loadFileAsPromise(file).then((buffer) => FRES.createSceneFromFRESBuffer(device, buffer));
-
-        if (file.name.endsWith('.szs') || file.name.endsWith('.rarc') || file.name.endsWith('.bmd') || file.name.endsWith('.bdl'))
-            return loadFileAsPromise(file).then((buffer) => J3D.createMultiSceneFromBuffer(device, buffer));
-
-        if (file.name.endsWith('.nsbmd'))
-            return loadFileAsPromise(file).then((buffer) => NNS_G3D.createBasicNSBMDRendererFromNSBMD(device, buffer));
-
-        return null;
-    }
 }
 
 class SceneLoader {

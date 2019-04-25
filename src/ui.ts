@@ -198,7 +198,8 @@ interface ScrollSelectItemHeader {
 interface ScrollSelectItemSelectable {
     type: ScrollSelectItemType.Selectable;
     visible?: boolean;
-    name: string;
+    name?: string;
+    html?: string;
 }
 
 export type ScrollSelectItem = ScrollSelectItemHeader | ScrollSelectItemSelectable;
@@ -269,7 +270,10 @@ export abstract class ScrollSelect implements Widget {
                 outer.appendChild(selector);
                 const textSpan = document.createElement('span');
                 textSpan.classList.add('text');
-                textSpan.textContent = item.name;
+                if (item.html)
+                    textSpan.innerHTML = item.html;
+                else
+                    textSpan.textContent = item.name;
                 selector.appendChild(textSpan);
 
                 const index = i;
@@ -978,11 +982,10 @@ class SceneSelect extends Panel {
     public setSceneGroups(sceneGroups: (string | Viewer.SceneGroup)[]) {
         this.sceneGroups = sceneGroups;
         this.sceneGroupList.setItems(sceneGroups.map((g): ScrollSelectItem => {
-            if (typeof g === 'string') {
+            if (typeof g === 'string')
                 return { type: ScrollSelectItemType.Header, html: g };
-            } else {
+            else
                 return { type: ScrollSelectItemType.Selectable, name: g.name };
-            }
         }));
         this.syncSceneDescs();
     }
@@ -1327,9 +1330,9 @@ export class TextureViewer extends Panel {
     private showInFullSurfaceView(surfaces: HTMLCanvasElement[]) {
         this.fullSurfaceView.innerHTML = '';
 
-        for (const surface of surfaces) {
+        for (let i = 0; i < surfaces.length; i++) {
             const newCanvas = document.createElement('canvas');
-            cloneCanvas(newCanvas, surface);
+            cloneCanvas(newCanvas, surfaces[i]);
             newCanvas.style.display = 'block';
             newCanvas.style.backgroundColor = 'white';
             newCanvas.style.backgroundImage = CHECKERBOARD_IMAGE;
@@ -1394,7 +1397,8 @@ class ViewerSettings extends Panel {
     private camSpeedSlider: HTMLInputElement;
     private cameraControllerWASD: HTMLElement;
     private cameraControllerOrbit: HTMLElement;
-    private invertCheckbox: Checkbox;
+    private invertYCheckbox: Checkbox;
+    private invertXCheckbox: Checkbox;
 
     constructor(private viewer: Viewer.Viewer) {
         super();
@@ -1485,10 +1489,15 @@ class ViewerSettings extends Panel {
             this.setCameraControllerClass(OrbitCameraController);
         };
 
-        this.invertCheckbox = new Checkbox('Invert Y Axis?');
-        this.invertCheckbox.onchanged = () => { this.setInvertY(this.invertCheckbox.checked); };
-        this.contents.appendChild(this.invertCheckbox.elem);
+        this.invertYCheckbox = new Checkbox('Invert Y Axis?');
+        this.invertYCheckbox.onchanged = () => { GlobalSaveManager.saveSetting(`InvertY`, this.invertYCheckbox.checked); };
+        this.contents.appendChild(this.invertYCheckbox.elem);
         GlobalSaveManager.addSettingListener('InvertY', this.invertYChanged.bind(this));
+
+        this.invertXCheckbox = new Checkbox('Invert X Axis?');
+        this.invertXCheckbox.onchanged = () => { GlobalSaveManager.saveSetting(`InvertX`, this.invertXCheckbox.checked); };
+        this.contents.appendChild(this.invertXCheckbox.elem);
+        GlobalSaveManager.addSettingListener('InvertX', this.invertXChanged.bind(this));
     }
 
     private _getSliderT(slider: HTMLInputElement) {
@@ -1525,13 +1534,14 @@ class ViewerSettings extends Panel {
         setElementHighlighted(this.cameraControllerOrbit, cameraControllerClass === OrbitCameraController);
     }
 
-    public setInvertY(v: boolean): void {
-        GlobalSaveManager.saveSetting(`InvertY`, v);
-    }
-
     private invertYChanged(saveManager: SaveManager, key: string): void {
         const invertY = saveManager.loadSetting<boolean>(key, false);
-        this.invertCheckbox.setChecked(invertY);
+        this.invertYCheckbox.setChecked(invertY);
+    }
+
+    private invertXChanged(saveManager: SaveManager, key: string): void {
+        const invertX = saveManager.loadSetting<boolean>(key, false);
+        this.invertXCheckbox.setChecked(invertX);
     }
 }
 
@@ -1700,6 +1710,7 @@ class About extends Panel {
 <a href="https://twitter.com/kittensandals">SpaceCats</a>,
 <a href="https://twitter.com/TanukiMatthew">TanukiMatthew</a>,
 <a href="https://twitter.com/QuadeZaban">Quade Zaban</a>,
+<a href="https://twitter.com/Murugalstudio">Murugo</a>,
 <a href="https://twitter.com/PistonMiner">PistonMiner</a>,
 <a href="https://twitter.com/LordNed">LordNed</a>,
 <a href="https://twitter.com/SageOfMirrors">SageOfMirrors</a>,
@@ -1743,7 +1754,7 @@ export interface Layer {
     setVisible(v: boolean): void;
 }
 
-const LAYER_ICON = `<svg viewBox="0 0 16 16" height="20" fill="white"><g transform="translate(0,-1036.3622)"><path d="m 8,1039.2486 -0.21875,0.125 -4.90625,2.4375 5.125,2.5625 5.125,-2.5625 L 8,1039.2486 z m -3,4.5625 -2.125,0.9688 5.125,2.5625 5.125,-2.5625 -2.09375,-0.9688 -3.03125,1.5 -1,-0.5 -0.90625,-0.4375 L 5,1043.8111 z m 0,3 -2.125,0.9688 5.125,2.5625 5.125,-2.5625 -2.09375,-0.9688 -3.03125,1.5 -1,-0.5 -0.90625,-0.4375 L 5,1046.8111 z"/></g></svg>`;
+export const LAYER_ICON = `<svg viewBox="0 0 16 16" height="20" fill="white"><g transform="translate(0,-1036.3622)"><path d="m 8,1039.2486 -0.21875,0.125 -4.90625,2.4375 5.125,2.5625 5.125,-2.5625 L 8,1039.2486 z m -3,4.5625 -2.125,0.9688 5.125,2.5625 5.125,-2.5625 -2.09375,-0.9688 -3.03125,1.5 -1,-0.5 -0.90625,-0.4375 L 5,1043.8111 z m 0,3 -2.125,0.9688 5.125,2.5625 5.125,-2.5625 -2.09375,-0.9688 -3.03125,1.5 -1,-0.5 -0.90625,-0.4375 L 5,1046.8111 z"/></g></svg>`;
 
 export class LayerPanel extends Panel {
     private multiSelect: MultiSelect;

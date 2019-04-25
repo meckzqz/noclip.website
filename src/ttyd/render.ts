@@ -19,6 +19,7 @@ import { Camera, computeViewMatrix, computeViewSpaceDepthFromWorldSpaceAABB } fr
 import { BasicRenderTarget, standardFullClearRenderPassDescriptor } from '../gfx/helpers/RenderTargetHelpers';
 import { fullscreenMegaState } from '../gfx/helpers/GfxMegaStateDescriptorHelpers';
 import { AABB } from '../Geometry';
+import { colorCopy } from '../Color';
 
 export class TPLTextureHolder extends GXTextureHolder<TPL.TPLTexture> {
     public addTPLTextures(device: GfxDevice, tpl: TPL.TPL): void {
@@ -177,7 +178,7 @@ class Command_Material {
             }
         }
 
-        materialParams.u_Color[ColorKind.MAT0].copy(this.material.matColorReg);
+        colorCopy(materialParams.u_Color[ColorKind.MAT0], this.material.matColorReg);
     }
 
     public stopAnimation(): void {
@@ -215,7 +216,8 @@ class Command_Batch {
 
     constructor(device: GfxDevice, renderHelper: GXRenderHelperGfx, private materialCommand: Command_Material, private nodeCommand: Command_Node, private batch: Batch, private coalescedBuffers: GfxCoalescedBuffers) {
         this.shapeHelper = new GXShapeHelperGfx(device, renderHelper, coalescedBuffers, batch.loadedVertexLayout, batch.loadedVertexData);
-        this.renderInst = this.shapeHelper.pushRenderInst(renderHelper.renderInstBuilder, materialCommand.templateRenderInst);
+        this.renderInst = this.shapeHelper.buildRenderInst(renderHelper.renderInstBuilder, materialCommand.templateRenderInst);
+        renderHelper.renderInstBuilder.pushRenderInst(this.renderInst);
         this.renderInst.setSamplerBindingsInherit();
         this.renderInst.name = nodeCommand.namePath;
         // Pull in render flags on the node itself.

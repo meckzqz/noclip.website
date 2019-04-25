@@ -44,6 +44,13 @@ export const enum InitErrorCode {
 
 export type Listener = (viewer: Viewer) => void;
 
+function resetGfxDebugGroup(group: GfxDebugGroup): void {
+    group.bufferUploadCount = 0;
+    group.drawCallCount = 0;
+    group.textureBindCount = 0;
+    group.triangleCount = 0;
+}
+
 export class Viewer {
     public inputManager: InputManager;
     public cameraController: CameraController | null = null;
@@ -65,6 +72,7 @@ export class Viewer {
     public oncamerachanged: () => void = (() => {});
     public onstatistics: (statistics: RenderStatistics) => void = (() => {});
     private keyMoveSpeedListeners: Listener[] = [];
+    private debugGroup: GfxDebugGroup = { name: 'Scene Rendering', drawCallCount: 0, bufferUploadCount: 0, textureBindCount: 0, triangleCount: 0 };
 
     constructor(private gfxSwapChain: GfxSwapChain, public canvas: HTMLCanvasElement) {
         this.inputManager = new InputManager(this.canvas);
@@ -111,12 +119,10 @@ export class Viewer {
         this.viewerRenderInput.viewportHeight = this.canvas.height;
         this.gfxSwapChain.configureSwapChain(this.canvas.width, this.canvas.height);
 
-        // TODO(jstpierre): Move RenderStatisticsTracker outside of RenderSTate
         this.renderStatisticsTracker.beginFrame();
 
-        // TODO(jstpierre): Allocations.
-        const debugGroup: GfxDebugGroup = { name: 'Scene Rendering', drawCallCount: 0, bufferUploadCount: 0, textureBindCount: 0, triangleCount: 0 };
-        this.gfxDevice.pushDebugGroup(debugGroup);
+        resetGfxDebugGroup(this.debugGroup);
+        this.gfxDevice.pushDebugGroup(this.debugGroup);
 
         const renderPass = this.scene.render(this.gfxDevice, this.viewerRenderInput);
         const onscreenTexture = this.gfxSwapChain.getOnscreenTexture();
@@ -127,7 +133,7 @@ export class Viewer {
         this.gfxDevice.popDebugGroup();
         this.renderStatisticsTracker.endFrame();
 
-        this.renderStatisticsTracker.applyDebugGroup(debugGroup);
+        this.renderStatisticsTracker.applyDebugGroup(this.debugGroup);
         this.onstatistics(this.renderStatisticsTracker);
     }
 
@@ -239,7 +245,7 @@ export function initializeViewer(out: ViewerOut, canvas: HTMLCanvasElement): Ini
     }
 
     // Test for no MS depthbuffer support (as seen in SwiftShader).
-    const samplesArray = gl.getInternalformatParameter(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, gl.SAMPLES);
+    const samplesArray = gl.getInternalformatParameter(gl.RENDERBUFFER, gl.DEPTH32F_STENCIL8, gl.SAMPLES);
     if (samplesArray === null || samplesArray.length === 0) {
         const ext = gl.getExtension('WEBGL_debug_renderer_info');
         if (ext && gl.getParameter(ext.UNMASKED_RENDERER_WEBGL).includes('SwiftShader'))
@@ -295,3 +301,4 @@ export function makeErrorUI(errorCode: InitErrorCode): DocumentFragment {
     else
         throw "whoops";
 }
+

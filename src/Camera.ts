@@ -108,8 +108,7 @@ const scratchVec4 = vec4.create();
 /**
  * Computes a view-space depth given @param camera and @param aabb in world-space.
  * 
- * The convention of "view-space depth" is that 0 is near plane, +z is further away.
- * The returned value can be passed directly to {@link GfxRenderer.setSortKeyDepth}.
+ * This is computed by taking the depth of the world-space depth of @param aabb.
  */
 export function computeViewSpaceDepthFromWorldSpaceAABB(camera: Camera, aabb: AABB, v: vec3 = scratchVec3): number {
     aabb.centerPoint(v);
@@ -120,11 +119,16 @@ export function computeViewSpaceDepthFromWorldSpaceAABB(camera: Camera, aabb: AA
  * Computes a view-space depth given @param camera and @param v in world-space.
  * 
  * The convention of "view-space depth" is that 0 is near plane, +z is further away.
- * The returned value can be passed directly to {@link GfxRenderer.setSortKeyDepth}.
+ *
+ * The returned value is not clamped to the near or far planes -- that is, the depth
+ * value is less than zero if the camera is behind the point.
+ *
+ * The returned value can be passed directly to {@link GfxRenderer.setSortKeyDepth},
+ * which will clamp if the value is below 0.
  */
 export function computeViewSpaceDepthFromWorldSpacePoint(camera: Camera, v: vec3): number {
     vec3.transformMat4(v, v, camera.viewMatrix);
-    return Math.max(-v[2], 0);
+    return -v[2];
 }
 
 export function divideByW(dst: vec4, src: vec4): void {
@@ -330,8 +334,9 @@ export class FPSCameraController implements CameraController {
 
         const mouseMoveLowSpeedCap = 0.0001;
 
+        const invertXMult = inputManager.invertX ? -1 : 1;
         const invertYMult = inputManager.invertY ? -1 : 1;
-        const dx = inputManager.getMouseDeltaX() * (-1 / this.mouseLookSpeed);
+        const dx = inputManager.getMouseDeltaX() * (-1 / this.mouseLookSpeed) * invertXMult;
         const dy = inputManager.getMouseDeltaY() * (-1 / this.mouseLookSpeed) * invertYMult;
 
         const mouseMovement = this.mouseMovement;
@@ -340,9 +345,9 @@ export class FPSCameraController implements CameraController {
 
         const keyAngleChangeVel = isShiftPressed ? 0.1 : 0.04;
         if (inputManager.isKeyDown('KeyJ'))
-            mouseMovement[0] += keyAngleChangeVel;
+            mouseMovement[0] += keyAngleChangeVel * invertXMult;
         else if (inputManager.isKeyDown('KeyL'))
-            mouseMovement[0] -= keyAngleChangeVel;
+            mouseMovement[0] -= keyAngleChangeVel * invertXMult;
         if (inputManager.isKeyDown('KeyI'))
             mouseMovement[1] += keyAngleChangeVel * invertYMult;
         else if (inputManager.isKeyDown('KeyK'))
