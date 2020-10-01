@@ -1,131 +1,10 @@
 
-// Parse uniform buffer definitions, and provide helpers for filling them...
+// Helpers to fill vertex buffers.
 
-import { Color } from "../../Color";
-import { mat4, mat2d, vec3 } from "gl-matrix";
-import { GfxBuffer, GfxHostAccessPass, GfxBufferBinding } from "../platform/GfxPlatform";
-import { assert, assertExists } from "../../util";
-import { GfxRenderBuffer } from "../render/GfxRenderBuffer";
+import { ReadonlyVec3, ReadonlyVec4, ReadonlyMat4, ReadonlyMat2d } from "gl-matrix";
+import { GfxColor } from "../platform/GfxPlatform";
 
-function findall(haystack: string, needle: RegExp): RegExpExecArray[] {
-    const results: RegExpExecArray[] = [];
-    while (true) {
-        const result = needle.exec(haystack);
-        if (!result)
-            break;
-        results.push(result);
-    }
-    return results;
-}
-
-export interface StructField {
-    name: string;
-    type: string;
-    arraySize: number;
-    wordSize: number;
-}
-
-export interface StructLayout {
-    blockName: string;
-    fields: StructField[];
-    totalWordSize: number;
-}
-
-const builtinTypeWordSizes = new Map<string, number>();
-builtinTypeWordSizes.set('float',  1);
-builtinTypeWordSizes.set('vec4',   4);
-builtinTypeWordSizes.set('Mat4x2', 4*2);
-builtinTypeWordSizes.set('Mat4x3', 4*3);
-builtinTypeWordSizes.set('Mat4x4', 4*4);
-
-function getTypeSize(layouts: Map<string, StructLayout>, type: string): number {
-    if (layouts.has(type))
-        return layouts.get(type).totalWordSize;
-    else
-        return builtinTypeWordSizes.get(type);
-}
-
-function parseDefinition(layouts: Map<string, StructLayout>, blockName: string, contents: string): StructLayout | null {
-    const uniformBufferVariables = findall(contents, /^\s*(\w+) (\w+)(?:\[(\d+)\])?;\s*$/mg);
-    const fields: StructField[] = [];
-    let totalWordSize = 0;
-    for (let i = 0; i < uniformBufferVariables.length; i++) {
-        const [m, type, name, arraySizeStr] = uniformBufferVariables[i];
-        let arraySize: number = 1;
-        if (arraySizeStr !== undefined)
-            arraySize = parseInt(arraySizeStr);
-        const typeSize = getTypeSize(layouts, type);
-        if (typeSize === undefined)
-            return null;
-        const rawWordSize = assertExists(getTypeSize(layouts, type)) * arraySize;
-        // Round up to the nearest 4, per std140 alignment rules.
-        const wordSize = (rawWordSize + 3) & ~3;
-        totalWordSize += wordSize;
-        fields.push({ type, name, arraySize, wordSize });
-    }
-    return { blockName, fields, totalWordSize };
-}
-
-export function parseShaderSource(uniformBufferLayouts: StructLayout[], shaderSource: string): void {
-    const layouts = new Map<string, StructLayout>();
-
-    const structBlocks = findall(shaderSource, /struct (\w+) {([^]*?)}/g);
-    for (let i = 0; i < structBlocks.length; i++) {
-        const [m, blockName, contents] = structBlocks[i];
-        const structLayout = parseDefinition(layouts, blockName, contents);
-        if (structLayout === null)
-            continue;
-        layouts.set(blockName, structLayout);
-    }
-
-    const uniformBlocks = findall(shaderSource, /uniform (\w+) {([^]*?)}/g);
-    for (let i = 0; i < uniformBlocks.length; i++) {
-        const [m, blockName, contents] = uniformBlocks[i];
-        uniformBufferLayouts.push(parseDefinition(layouts, blockName, contents));
-    }
-}
-
-// TODO(jstpierre): I'm not sure I like this class.
-export class BufferFillerHelper {
-    private offs: number;
-
-    constructor(public bufferLayout: StructLayout, public d: Float32Array = null, public startOffs: number = 0) {
-        if (this.d === null) {
-            this.d = new Float32Array(bufferLayout.totalWordSize);
-        }
-    }
-
-    public reset(): void {
-        this.offs = this.startOffs;
-    }
-
-    public getBufferBinding(buffer: GfxBuffer): GfxBufferBinding {
-        return { buffer, wordOffset: this.startOffs, wordCount: this.bufferLayout.totalWordSize };
-    }
-
-    public endAndUpload(hostAccessPass: GfxHostAccessPass, gfxBuffer: GfxRenderBuffer, dstWordOffset: number = 0): void {
-        assert(this.offs === this.bufferLayout.totalWordSize);
-        gfxBuffer.uploadSubData(hostAccessPass, dstWordOffset, this.d);
-    }
-
-    public fillVec4(v0: number, v1: number = 0, v2: number = 0, v3: number = 0): void {
-        this.offs += fillVec4(this.d, this.offs, v0, v1, v2, v3);
-    }
-
-    public fillColor(c: Color): void {
-        this.offs += fillColor(this.d, this.offs, c);
-    }
-
-    public fillMatrix4x4(m: mat4): void {
-        this.offs += fillMatrix4x4(this.d, this.offs, m);
-    }
-
-    public fillMatrix4x3(m: mat4): void {
-        this.offs += fillMatrix4x3(this.d, this.offs, m);
-    }
-}
-
-export function fillVec3(d: Float32Array, offs: number, v: vec3, v3: number = 0): number {
+export function fillVec3v(d: Float32Array, offs: number, v: ReadonlyVec3, v3: number = 0): number {
     d[offs + 0] = v[0];
     d[offs + 1] = v[1];
     d[offs + 2] = v[2];
@@ -141,7 +20,15 @@ export function fillVec4(d: Float32Array, offs: number, v0: number, v1: number =
     return 4;
 }
 
-export function fillColor(d: Float32Array, offs: number, c: Color): number {
+export function fillVec4v(d: Float32Array, offs: number, v: ReadonlyVec4): number {
+    d[offs + 0] = v[0];
+    d[offs + 1] = v[1];
+    d[offs + 2] = v[2];
+    d[offs + 3] = v[3];
+    return 4;
+}
+
+export function fillColor(d: Float32Array, offs: number, c: Readonly<GfxColor>): number {
     d[offs + 0] = c.r;
     d[offs + 1] = c.g;
     d[offs + 2] = c.b;
@@ -150,7 +37,7 @@ export function fillColor(d: Float32Array, offs: number, c: Color): number {
 }
 
 // All of our matrices are row-major.
-export function fillMatrix4x4(d: Float32Array, offs: number, m: mat4): number {
+export function fillMatrix4x4(d: Float32Array, offs: number, m: ReadonlyMat4): number {
     d[offs +  0] = m[0];
     d[offs +  1] = m[4];
     d[offs +  2] = m[8];
@@ -170,7 +57,7 @@ export function fillMatrix4x4(d: Float32Array, offs: number, m: mat4): number {
     return 4*4;
 }
 
-export function fillMatrix4x3(d: Float32Array, offs: number, m: mat4): number {
+export function fillMatrix4x3(d: Float32Array, offs: number, m: ReadonlyMat4): number {
     d[offs +  0] = m[0];
     d[offs +  1] = m[4];
     d[offs +  2] = m[8];
@@ -186,7 +73,7 @@ export function fillMatrix4x3(d: Float32Array, offs: number, m: mat4): number {
     return 4*3;
 }
 
-export function fillMatrix3x2(d: Float32Array, offs: number, m: mat2d): number {
+export function fillMatrix3x2(d: Float32Array, offs: number, m: ReadonlyMat2d): number {
     // 3x2 matrices are actually sent across as 4x2.
     const ma = m[0], mb = m[1];
     const mc = m[2], md = m[3];
@@ -202,7 +89,7 @@ export function fillMatrix3x2(d: Float32Array, offs: number, m: mat2d): number {
     return 4*2;
 }
 
-export function fillMatrix4x2(d: Float32Array, offs: number, m: mat4): number {
+export function fillMatrix4x2(d: Float32Array, offs: number, m: ReadonlyMat4): number {
     // The bottom two rows are basically just ignored in a 4x2.
     d[offs +  0] = m[0];
     d[offs +  1] = m[4];

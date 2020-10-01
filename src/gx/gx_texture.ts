@@ -4,9 +4,9 @@
 import ArrayBufferSlice from '../ArrayBufferSlice';
 
 import * as GX from './gx_enum';
-import { align, assert } from '../util';
+import { align, assertExists } from '../util';
 import { gx_texture_asInstance, gx_texture_asExports } from '../wat_modules';
-import WasmMemoryManager from '../WasmMemoryManager';
+import { WasmMemoryManager } from '../WasmMemoryManager';
 
 type TextureDecoder = (pScratch: number, pDst: number, pSrc: number, width: number, height: number) => void;
 
@@ -23,15 +23,15 @@ declare module "../wat_modules" {
     }
 }
 
-export interface Texture {
+export interface TextureInputGX {
     name: string;
     format: GX.TexFormat;
     width: number;
     height: number;
-    data: ArrayBufferSlice;
-    mipCount?: number;
-    paletteFormat?: GX.TexPalette;
-    paletteData?: ArrayBufferSlice;
+    data: ArrayBufferSlice | null;
+    mipCount: number;
+    paletteFormat?: GX.TexPalette | null;
+    paletteData?: ArrayBufferSlice | null;
 }
 
 export interface DecodedTexture {
@@ -60,7 +60,7 @@ export function calcPaletteSize(format: GX.TexFormat, palette: GX.TexPalette) {
 }
 
 export function calcTextureSize(format: GX.TexFormat, width: number, height: number) {
-    const numPixels = width * height;
+    const numPixels = align(width, 0x08) * align(height, 0x08);
     switch (format) {
     case GX.TexFormat.I4:
         return numPixels / 2;
@@ -91,12 +91,12 @@ export function calcTextureSize(format: GX.TexFormat, width: number, height: num
 
 export interface MipChain {
     name: string;
-    mipLevels: Texture[];
+    mipLevels: TextureInputGX[];
     fullTextureSize: number;
 }
 
-export function calcMipChain(texture: Texture, mipCount: number = 0xFF): MipChain {
-    const mipLevels: Texture[] = [];
+export function calcMipChain(texture: TextureInputGX, mipCount: number): MipChain {
+    const mipLevels: TextureInputGX[] = [];
     const name = texture.name;
 
     let mipOffs = 0;
@@ -109,7 +109,7 @@ export function calcMipChain(texture: Texture, mipCount: number = 0xFF): MipChai
         const data = texture.data !== null ? texture.data.subarray(mipOffs) : null;
         const paletteFormat = texture.paletteFormat;
         const paletteData = texture.paletteData;
-        mipLevels.push({ name: `${texture.name} mip level ${mipLevel}`, format, width, height, data, paletteFormat, paletteData });
+        mipLevels.push({ name: `${texture.name} mip level ${mipLevel}`, format, width, height, data, paletteFormat, paletteData, mipCount: 1 });
         mipLevel++;
         const mipSize = calcTextureSize(format, width, height);
         // Mipmap levels are aligned to 32B.
@@ -132,9 +132,9 @@ export function calcMipChain(texture: Texture, mipCount: number = 0xFF): MipChai
 // bug is fixed. https://bugzilla.mozilla.org/show_bug.cgi?id=1459761#c5
 const _wasmInstance = gx_texture_asInstance();
 
-function decode_Wasm(wasmInstance: gx_texture_asExports, texture: Texture, decoder: TextureDecoder, scratchSize: number = 0): DecodedTexture {
+function decode_Wasm(wasmInstance: gx_texture_asExports, texture: TextureInputGX, decoder: TextureDecoder, scratchSize: number = 0): DecodedTexture {
     const dstSize = texture.width * texture.height * 4;
-    const srcSize = texture.data.byteLength;
+    const srcSize = texture.data!.byteLength;
 
     const pScratch = 0;
     const pDst = align(pScratch + scratchSize, 0x10);
@@ -145,7 +145,7 @@ function decode_Wasm(wasmInstance: gx_texture_asExports, texture: Texture, decod
     const heap = wasmMemory.resize(heapSize);
 
     // Copy src buffer.
-    heap.set(texture.data.createTypedArray(Uint8Array), pSrc);
+    heap.set(texture.data!.createTypedArray(Uint8Array), pSrc);
 
     decoder(pScratch, pDst, pSrc, texture.width, texture.height);
 
@@ -155,7 +155,7 @@ function decode_Wasm(wasmInstance: gx_texture_asExports, texture: Texture, decod
     return { pixels };
 }
 
-function decode_Dummy(texture: Texture): DecodedTexture {
+function decode_Dummy(texture: TextureInputGX): DecodedTexture {
     const pixels = new Uint8Array(texture.width * texture.height * 4);
     pixels.fill(0xFF);
     return { pixels };
@@ -240,7 +240,7 @@ function decodePalette(paletteFormat: GX.TexPalette, paletteData: ArrayBufferSli
     }
 }
 
-function decode_Tiled(texture: Texture, bw: number, bh: number, decoder: (pixels: Uint8Array, dstOffs: number) => void): DecodedTexture {
+function decode_Tiled(texture: TextureInputGX, bw: number, bh: number, decoder: (pixels: Uint8Array, dstOffs: number) => void): DecodedTexture {
     const pixels = new Uint8Array(texture.width * texture.height * 4);
     for (let yy = 0; yy < texture.height; yy += bh) {
         for (let xx = 0; xx < texture.width; xx += bw) {
@@ -256,9 +256,9 @@ function decode_Tiled(texture: Texture, bw: number, bh: number, decoder: (pixels
     return { pixels };
 }
 
-function decode_C4(texture: Texture): DecodedTexture {
-    if (!texture.paletteData) return decode_Dummy(texture);
-    const view = texture.data.createDataView();
+function decode_C4(texture: TextureInputGX): DecodedTexture {
+    if (!texture.paletteData || !texture.paletteFormat) return decode_Dummy(texture);
+    const view = texture.data!.createDataView();
     const paletteData: Uint8Array = decodePalette(texture.paletteFormat, texture.paletteData);
     let srcOffs = 0;
     return decode_Tiled(texture, 8, 8, (dst: Uint8Array, dstOffs: number): void => {
@@ -272,9 +272,9 @@ function decode_C4(texture: Texture): DecodedTexture {
     });
 }
 
-function decode_C8(texture: Texture): DecodedTexture {
-    if (!texture.paletteData) return decode_Dummy(texture);
-    const view = texture.data.createDataView();
+function decode_C8(texture: TextureInputGX): DecodedTexture {
+    if (!texture.paletteData || !texture.paletteFormat) return decode_Dummy(texture);
+    const view = texture.data!.createDataView();
     const paletteData: Uint8Array = decodePalette(texture.paletteFormat, texture.paletteData);
     let srcOffs = 0;
     return decode_Tiled(texture, 8, 4, (dst: Uint8Array, dstOffs: number): void => {
@@ -287,9 +287,9 @@ function decode_C8(texture: Texture): DecodedTexture {
     });
 }
 
-function decode_C14X2(texture: Texture): DecodedTexture {
-    if (!texture.paletteData) return decode_Dummy(texture);
-    const view = texture.data.createDataView();
+function decode_C14X2(texture: TextureInputGX): DecodedTexture {
+    if (!texture.paletteData || !texture.paletteFormat) return decode_Dummy(texture);
+    const view = texture.data!.createDataView();
     const paletteData: Uint8Array = decodePalette(texture.paletteFormat, texture.paletteData);
     let srcOffs = 0;
     return decode_Tiled(texture, 4, 4, (dst: Uint8Array, dstOffs: number): void => {
@@ -302,8 +302,8 @@ function decode_C14X2(texture: Texture): DecodedTexture {
     });
 }
 
-function getPaletteFormatName(paletteFormat: GX.TexPalette): string {
-    switch (paletteFormat) {
+function getPaletteFormatName(paletteFormat: GX.TexPalette | undefined | null): string {
+    switch (assertExists(paletteFormat)) {
     case GX.TexPalette.IA8:
         return "IA8";
     case GX.TexPalette.RGB565:
@@ -315,7 +315,7 @@ function getPaletteFormatName(paletteFormat: GX.TexPalette): string {
     }
 }
 
-export function getFormatName(format: GX.TexFormat, paletteFormat: GX.TexPalette): string {
+export function getFormatName(format: GX.TexFormat, paletteFormat?: GX.TexPalette | null): string {
     switch (format) {
     case GX.TexFormat.I4:
         return "I4";
@@ -344,7 +344,7 @@ export function getFormatName(format: GX.TexFormat, paletteFormat: GX.TexPalette
     }
 }
 
-export function decodeTexture(texture: Texture): Promise<DecodedTexture> {
+export function decodeTexture(texture: TextureInputGX): Promise<DecodedTexture> {
     if (texture.data === null)
         return Promise.resolve(decode_Dummy(texture));
 

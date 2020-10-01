@@ -5,10 +5,12 @@
 import * as GX from '../gx/gx_enum';
 
 import ArrayBufferSlice from "../ArrayBufferSlice";
-import { assert, readString } from "../util";
+import { assert, readString, assertExists, nArray } from "../util";
 import * as GX_Material from '../gx/gx_material';
+import { DisplayListRegisters, displayListRegistersRun } from '../gx/gx_displaylist';
+import { parseTexGens, parseTevStages, parseIndirectStages, parseRopInfo, parseAlphaTest, parseColorChannelControlRegister } from '../gx/gx_material';
 import { GX_Array, GX_VtxAttrFmt, GX_VtxDesc, LoadedVertexData, compileVtxLoader, LoadedVertexLayout, getAttributeComponentByteSizeRaw, getAttributeFormatCompFlagsRaw } from '../gx/gx_displaylist';
-import { mat4, mat2d } from 'gl-matrix';
+import { mat4, vec3 } from 'gl-matrix';
 import { Endianness } from '../endian';
 import { AABB } from '../Geometry';
 import { TextureMapping } from '../TextureHolder';
@@ -17,20 +19,15 @@ import { cv, Graph } from '../DebugJunk';
 import { GXTextureHolder } from '../gx/gx_render';
 import { getFormatCompFlagsComponentCount } from '../gfx/platform/GfxPlatformFormat';
 import { getPointHermite } from '../Spline';
-import { colorToRGBA8, colorFromRGBA8 } from '../Color';
+import { colorToRGBA8, colorFromRGBA8, colorNewCopy, White, Color, colorNewFromRGBA, colorCopy } from '../Color';
+import { computeModelMatrixSRT, MathConstants, lerp, Vec3UnitY } from '../MathHelpers';
+import BitMap from '../BitMap';
+import { autoOptimizeMaterial } from '../gx/gx_render';
+import { Camera } from '../Camera';
 
 //#region Utility
-function calc2dMtx(dst: mat2d, src: mat4): void {
-    dst[0] = src[0];
-    dst[1] = src[1];
-    dst[2] = src[4];
-    dst[3] = src[5];
-    dst[4] = src[12];
-    dst[5] = src[13]
-}
-
 function calcTexMtx_Basic(dst: mat4, scaleS: number, scaleT: number, rotation: number, translationS: number, translationT: number): void {
-    const theta = Math.PI / 180 * rotation;
+    const theta = rotation * MathConstants.DEG_TO_RAD;
     const sinR = Math.sin(theta);
     const cosR = Math.cos(theta);
 
@@ -46,85 +43,78 @@ function calcTexMtx_Basic(dst: mat4, scaleS: number, scaleT: number, rotation: n
 }
 
 function calcTexMtx_Maya(dst: mat4, scaleS: number, scaleT: number, rotation: number, translationS: number, translationT: number): void {
-    const theta = Math.PI / 180 * rotation;
+    const theta = rotation * MathConstants.DEG_TO_RAD;
+    const sinR = Math.sin(theta);
+    const cosR = Math.cos(theta);
+
+    mat4.identity(dst);
+
+    const sinP = 0.5 * sinR - 0.5;
+    const cosP = -0.5 * cosR;
+
+    dst[0]  = scaleS *  cosR;
+    dst[4]  = scaleS *  sinR;
+    dst[12] = scaleS * (cosP - sinP - translationS);
+
+    dst[1]  = scaleT * -sinR;
+    dst[5]  = scaleT *  cosR;
+    dst[13] = scaleT * (cosP + sinP + translationT) + 1.0;
+}
+
+function calcTexMtx_XSI(dst: mat4, scaleS: number, scaleT: number, rotation: number, translationS: number, translationT: number): void {
+    const theta = rotation * MathConstants.DEG_TO_RAD;
     const sinR = Math.sin(theta);
     const cosR = Math.cos(theta);
 
     mat4.identity(dst);
 
     dst[0]  = scaleS *  cosR;
-    dst[1]  = scaleT * -sinR;
-    dst[4]  = scaleS *  sinR;
+    dst[4]  = scaleS * -sinR;
+    dst[12] = (scaleS *  sinR) - (scaleS * cosR * translationS) - (scaleS * sinR * translationT);
+
+    dst[1]  = scaleT *  sinR;
     dst[5]  = scaleT *  cosR;
-    dst[12] = scaleS * ((-0.5 * cosR) - (0.5 * sinR - 0.5) - translationS);
-    dst[13] = scaleT * ((-0.5 * cosR) + (0.5 * sinR - 0.5) + translationT) + 1;
+    dst[13] = (scaleT * -cosR) - (scaleT * sinR * translationS) + (scaleT * cosR * translationT) + 1.0;
 }
 
 function calcTexMtx_Max(dst: mat4, scaleS: number, scaleT: number, rotation: number, translationS: number, translationT: number): void {
-    const theta = Math.PI / 180 * rotation;
+    const theta = rotation * MathConstants.DEG_TO_RAD;
     const sinR = Math.sin(theta);
     const cosR = Math.cos(theta);
 
     mat4.identity(dst);
 
     dst[0]  = scaleS *  cosR;
-    dst[1]  = scaleT * -sinR;
     dst[4]  = scaleS *  sinR;
+    dst[12] = scaleS * ((-cosR * (translationS + 0.5)) + (sinR * (translationT - 0.5))) + 0.5;
+
+    dst[1]  = scaleT * -sinR;
     dst[5]  = scaleT *  cosR;
-    dst[12] = (scaleS * -cosR * (translationS + 0.5)) + (scaleS * sinR * (translationT - 0.5)) + 0.5;
-    dst[13] = (scaleT *  sinR * (translationS + 0.5)) + (scaleT * cosR * (translationT - 0.5)) + 0.5;
+    dst[13] = scaleT * (( sinR * (translationS + 0.5)) + (cosR * (translationT - 0.5))) + 0.5;
 }
 
 const enum TexMatrixMode {
-    BASIC = -1,
-    MAYA = 0,
-    MAX = 2,
+    Basic = -1,
+    Maya = 0,
+    XSI = 1,
+    Max = 2,
 };
 
 function calcTexMtx(dst: mat4, texMtxMode: TexMatrixMode, scaleS: number, scaleT: number, rotation: number, translationS: number, translationT: number): void {
     switch (texMtxMode) {
-    case TexMatrixMode.BASIC:
+    case TexMatrixMode.Basic:
         return calcTexMtx_Basic(dst, scaleS, scaleT, rotation, translationS, translationT);
-    case TexMatrixMode.MAYA:
+    case TexMatrixMode.Maya:
         return calcTexMtx_Maya(dst, scaleS, scaleT, rotation, translationS, translationT);
-    case TexMatrixMode.MAX:
+    case TexMatrixMode.XSI:
+        return calcTexMtx_XSI(dst, scaleS, scaleT, rotation, translationS, translationT);
+    case TexMatrixMode.Max:
         return calcTexMtx_Max(dst, scaleS, scaleT, rotation, translationS, translationT);
     default:
         throw "whoops";
     }
 }
-
-function calcModelMtx(dst: mat4, scaleX: number, scaleY: number, scaleZ: number, rotationX: number, rotationY: number, rotationZ: number, translationX: number, translationY: number, translationZ: number): void {
-    const rX = Math.PI / 180 * rotationX;
-    const rY = Math.PI / 180 * rotationY;
-    const rZ = Math.PI / 180 * rotationZ;
-
-    const sinX = Math.sin(rX), cosX = Math.cos(rX);
-    const sinY = Math.sin(rY), cosY = Math.cos(rY);
-    const sinZ = Math.sin(rZ), cosZ = Math.cos(rZ);
-
-    dst[0] =  scaleX * (cosY * cosZ);
-    dst[1] =  scaleX * (sinZ * cosY);
-    dst[2] =  scaleX * (-sinY);
-    dst[3] =  0.0;
-
-    dst[4] =  scaleY * (sinX * cosZ * sinY - cosX * sinZ);
-    dst[5] =  scaleY * (sinX * sinZ * sinY + cosX * cosZ);
-    dst[6] =  scaleY * (sinX * cosY);
-    dst[7] =  0.0;
-
-    dst[8] =  scaleZ * (cosX * cosZ * sinY + sinX * sinZ);
-    dst[9] =  scaleZ * (cosX * sinZ * sinY - sinX * cosZ);
-    dst[10] = scaleZ * (cosY * cosX);
-    dst[11] = 0.0;
-
-    dst[12] = translationX;
-    dst[13] = translationY;
-    dst[14] = translationZ;
-    dst[15] = 1.0;
-}
 //#endregion
-
 //#region ResDic
 interface ResDicEntry {
     name: string;
@@ -154,8 +144,98 @@ function parseResDic(buffer: ArrayBufferSlice, tableOffs: number): ResDicEntry[]
 
     return entries;
 }
-//#endregion
 
+export const enum ResUserDataItemValueType {
+    S32, F32, STRING,
+}
+
+interface ResUserDataItemBase {
+    userDataType: ResUserDataItemValueType;
+    name: string;
+    id: number;
+}
+
+interface ResUserDataItemNumber extends ResUserDataItemBase {
+    value: number[];
+}
+
+interface ResUserDataItemString extends ResUserDataItemBase {
+    value: string[];
+}
+
+export type ResUserDataItem = ResUserDataItemNumber | ResUserDataItemString;
+
+interface ResUserData {
+    entries: ResUserDataItem[];
+}
+
+function parseUserData(buffer: ArrayBufferSlice, offs: number): ResUserData | null {
+    if (offs === 0)
+        return null;
+
+    const view = buffer.createDataView();
+    const size = view.getUint32(offs + 0x00);
+    const resDic = parseResDic(buffer, offs + 0x04);
+    const entries: ResUserDataItem[] = [];
+
+    for (let i = 0; i < resDic.length; i++) {
+        const itemOffs = resDic[i].offs;
+        const size = view.getUint32(itemOffs + 0x00);
+        const toData = view.getUint32(itemOffs + 0x04);
+        const arraySize = view.getUint32(itemOffs + 0x08);
+        const userDataType = view.getUint32(itemOffs + 0x0C);
+        const nameOffs = view.getUint32(itemOffs + 0x10);
+        const name = readString(buffer, itemOffs + nameOffs);
+        assert(name === resDic[i].name);
+        const id = view.getUint32(0x14);
+
+        if (userDataType === ResUserDataItemValueType.S32) {
+            const value: number[] = [];
+            for (let i = 0; i < arraySize; i++)
+                value.push(view.getInt32(itemOffs + toData + 0x04 * i));
+            entries.push({ userDataType, name, id, value });
+        } else if (userDataType === ResUserDataItemValueType.F32) {
+            const value: number[] = [];
+            for (let i = 0; i < arraySize; i++)
+                value.push(view.getFloat32(itemOffs + toData + 0x04 * i));
+            entries.push({ userDataType, name, id, value });
+        } else if (userDataType === ResUserDataItemValueType.STRING) {
+            const value: string[] = [];
+            for (let i = 0; i < arraySize; i++)
+                value.push(readString(buffer, itemOffs + toData + 0x04 * i));
+            entries.push({ userDataType, name, id, value });
+        }
+    }
+
+    return { entries };
+}
+//#endregion
+//#region PLT0
+export interface PLT0 {
+    name: string;
+    format: GX.TexPalette;
+    data: ArrayBufferSlice | null;
+}
+
+function parsePLT0(buffer: ArrayBufferSlice): PLT0 {
+    const view = buffer.createDataView();
+
+    assert(readString(buffer, 0x00, 0x04) === 'PLT0');
+    const version = view.getUint32(0x08);
+    const supportedVersions = [0x01, 0x03];
+    assert(supportedVersions.includes(version));
+
+    const dataOffs = view.getUint32(0x10);
+    const nameOffs = view.getUint32(0x14);
+    const name = readString(buffer, nameOffs);
+
+    const format: GX.TexPalette = view.getUint32(0x18);
+    const numEntries = view.getUint16(0x1C);
+
+    const data = buffer.subarray(dataOffs, numEntries * 0x02);
+    return { name, format, data };
+}
+//#endregion
 //#region TEX0
 export interface TEX0 {
     name: string;
@@ -166,6 +246,9 @@ export interface TEX0 {
     minLOD: number;
     maxLOD: number;
     data: ArrayBufferSlice;
+
+    paletteFormat: GX.TexPalette | null;
+    paletteData: ArrayBufferSlice | null;
 }
 
 function parseTEX0(buffer: ArrayBufferSlice): TEX0 {
@@ -189,128 +272,16 @@ function parseTEX0(buffer: ArrayBufferSlice): TEX0 {
     const maxLOD = view.getFloat32(0x2C) * 1/8;
 
     const data = buffer.subarray(dataOffs);
-    return { name, width, height, format, mipCount, minLOD, maxLOD, data };
+
+    // To be filled in later.
+    const paletteFormat: GX.TexPalette | null = null;
+    const paletteData: ArrayBufferSlice | null = null;
+
+    return { name, width, height, format, mipCount, minLOD, maxLOD, data, paletteFormat, paletteData };
 }
 //#endregion
 
 //#region MDL0
-export class DisplayListRegisters {
-    public bp: Uint32Array = new Uint32Array(0x100);
-    public cp: Uint32Array = new Uint32Array(0x100);
-
-    // Can have up to 16 values per register.
-    private xf: Uint32Array = new Uint32Array(0x1000);
-
-    // TEV colors are weird and are two things under the hood
-    // with the same register address.
-    public kc: Uint32Array = new Uint32Array(4 * 2 * 2);
-
-    constructor() {
-        // Initialize defaults.
-        this.bp[GX.BPRegister.SS_MASK] = 0x00FFFFFF;
-    }
-
-    public bps(regBag: number): void {
-        // First byte has register address, other 3 have value.
-        const regAddr  = regBag >>> 24;
-
-        const regWMask = this.bp[GX.BPRegister.SS_MASK];
-        // Retrieve existing value, overwrite w/ mask.
-        const regValue = (this.bp[regAddr] & ~regWMask) | (regBag & regWMask);
-        // The mask resets after use.
-        this.bp[GX.BPRegister.SS_MASK] = 0x00FFFFFF;
-        // Set new value.
-        this.bp[regAddr] = regValue;
-
-        // Copy TEV colors internally.
-        if (regAddr >= GX.BPRegister.TEV_REGISTERL_0_ID && regAddr <= GX.BPRegister.TEV_REGISTERL_0_ID + 4 * 2) {
-            const kci = regAddr - GX.BPRegister.TEV_REGISTERL_0_ID;
-            const bank = (regValue >>> 23) & 0x01;
-            this.kc[bank * 4 * 2 + kci] = regValue;
-        }
-    }
-    public xfs(idx: GX.XFRegister, sub: number, v: number): void {
-        assert(idx >= 0x1000);
-        idx -= 0x1000;
-        this.xf[idx * 0x10 + sub] = v;
-    }
-
-    public xfg(idx: GX.XFRegister, sub: number = 0): number {
-        assert(idx >= 0x1000);
-        idx -= 0x1000;
-        return this.xf[idx * 0x10 + sub];
-    }
-}
-
-export function runDisplayListRegisters(r: DisplayListRegisters, buffer: ArrayBufferSlice): void {
-    const view = buffer.createDataView();
-
-    for (let i = 0; i < buffer.byteLength;) {
-        const cmd = view.getUint8(i++);
-
-        switch (cmd) {
-        case GX.Command.NOOP:
-            continue;
-
-        case GX.Command.LOAD_BP_REG: {
-            const regBag = view.getUint32(i);
-            i += 4;
-            r.bps(regBag);
-            break;
-        }
-
-        case GX.Command.LOAD_CP_REG: {
-            const regAddr = view.getUint8(i);
-            i++;
-            const regValue = view.getUint32(i);
-            i += 4;
-            r.cp[regAddr] = regValue;
-            break;
-        }
-
-        case GX.Command.LOAD_XF_REG: {
-            const len = view.getUint16(i) + 1;
-            i += 2;
-            assert(len <= 0x10);
-
-            const regAddr = view.getUint16(i);
-            i += 2;
-
-            for (let j = 0; j < len; j++) {
-                r.xfs(regAddr, j, view.getUint32(i));
-                i += 4;
-            }
-
-            // Clear out the other values.
-            for (let j = len; j < 16; j++) {
-                r.xfs(regAddr, j, 0);
-            }
-
-            break;
-        }
-
-        default:
-            console.error(`Unknown command ${cmd} at ${i} (buffer: 0x${buffer.byteOffset.toString(16)})`);
-            throw "whoops 1";
-        }
-    }
-}
-
-function findTevOp(bias: GX.TevBias, scale: GX.TevScale, sub: boolean): GX.TevOp {
-    if (bias === GX.TevBias.$HWB_COMPARE) {
-        switch (scale) {
-        case GX.TevScale.$HWB_R8: return sub ? GX.TevOp.COMP_R8_EQ : GX.TevOp.COMP_R8_GT;
-        case GX.TevScale.$HWB_GR16: return sub ? GX.TevOp.COMP_GR16_EQ : GX.TevOp.COMP_GR16_GT;
-        case GX.TevScale.$HWB_BGR24: return sub ? GX.TevOp.COMP_BGR24_EQ : GX.TevOp.COMP_BGR24_GT;
-        case GX.TevScale.$HWB_RGB8: return sub ? GX.TevOp.COMP_RGB8_EQ : GX.TevOp.COMP_RGB8_GT;
-        default:
-            throw "whoops 2";
-        }
-    } else {
-        return sub ? GX.TevOp.SUB : GX.TevOp.ADD;
-    }
-}
-
 function parseMDL0_TevEntry(buffer: ArrayBufferSlice, r: DisplayListRegisters, numStagesCheck: number): void {
     const view = buffer.createDataView();
 
@@ -322,7 +293,7 @@ function parseMDL0_TevEntry(buffer: ArrayBufferSlice, r: DisplayListRegisters, n
     assert(numStages === numStagesCheck);
 
     const dlOffs = 0x20;
-    runDisplayListRegisters(r, buffer.subarray(dlOffs, 480));
+    displayListRegistersRun(r, buffer.subarray(dlOffs, 480));
 }
 
 export const enum MapMode {
@@ -343,7 +314,7 @@ export interface MDL0_TexSrtEntry {
 
 interface MDL0_MaterialSamplerEntry {
     name: string;
-    namePalette: string;
+    namePalette: string | null;
     wrapS: GX.WrapMode;
     wrapT: GX.WrapMode;
     minFilter: GX.TexFilter;
@@ -355,268 +326,34 @@ export interface MDL0_MaterialEntry {
     index: number;
     name: string;
     translucent: boolean;
+    lightSetIdx: number;
+    fogIdx: number;
     gxMaterial: GX_Material.GXMaterial;
     samplers: MDL0_MaterialSamplerEntry[];
     texSrts: MDL0_TexSrtEntry[];
-    indTexMatrices: mat2d[];
-    colorAmbRegs: GX_Material.Color[];
-    colorMatRegs: GX_Material.Color[];
-    colorRegisters: GX_Material.Color[];
-    colorConstants: GX_Material.Color[];
+    indTexMatrices: Float32Array[];
+    colorAmbRegs: Color[];
+    colorMatRegs: Color[];
+    colorRegisters: Color[];
+    colorConstants: Color[];
 }
 
 export function parseMaterialEntry(r: DisplayListRegisters, index: number, name: string, numTexGens: number, numTevs: number, numInds: number): GX_Material.GXMaterial {
-    // TexGens.
-    const texGens: GX_Material.TexGen[] = [];
-
-    for (let i = 0; i < numTexGens; i++) {
-        const v = r.xfg(GX.XFRegister.XF_TEX0_ID + i);
-
-        const enum TexProjection {
-            ST = 0x00,
-            STQ = 0x01,
-        }
-        const enum TexForm {
-            AB11 = 0x00,
-            ABC1 = 0x01,
-        }
-        const enum TexGenType {
-            REGULAR = 0x00,
-            EMBOSS_MAP = 0x01,
-            COLOR_STRGBC0 = 0x02,
-            COLOR_STRGBC1 = 0x02,
-        }
-        const enum TexSourceRow {
-            GEOM = 0x00,
-            NRM = 0x01,
-            CLR = 0x02,
-            BNT = 0x03,
-            BNB = 0x04,
-            TEX0 = 0x05,
-            TEX1 = 0x06,
-            TEX2 = 0x07,
-            TEX3 = 0x08,
-            TEX4 = 0x09,
-            TEX5 = 0x0A,
-            TEX6 = 0x0B,
-            TEX7 = 0x0C,
-        }
-
-        const proj: TexProjection = (v >>>  1) & 0x01;
-        const form: TexForm =       (v >>>  2) & 0x01;
-        const tgType: TexGenType =  (v >>>  4) & 0x02;
-        const src: TexSourceRow =   (v >>>  7) & 0x0F;
-        const embossSrc =           (v >>> 12) & 0x07;
-        const embossLgt =           (v >>> 15) & 0x07;
-
-        let texGenType: GX.TexGenType;
-        let texGenSrc: GX.TexGenSrc;
-
-        if (tgType === TexGenType.REGULAR) {
-            const srcLookup = [
-                GX.TexGenSrc.POS,
-                GX.TexGenSrc.NRM,
-                GX.TexGenSrc.COLOR0,
-                GX.TexGenSrc.BINRM,
-                GX.TexGenSrc.TANGENT,
-                GX.TexGenSrc.TEX0,
-                GX.TexGenSrc.TEX1,
-                GX.TexGenSrc.TEX2,
-                GX.TexGenSrc.TEX3,
-                GX.TexGenSrc.TEX4,
-                GX.TexGenSrc.TEX5,
-                GX.TexGenSrc.TEX6,
-                GX.TexGenSrc.TEX7,
-            ];
-
-            texGenType = proj === TexProjection.ST ? GX.TexGenType.MTX2x4 : GX.TexGenType.MTX3x4;
-            texGenSrc = srcLookup[src];
-        } else if (tgType === TexGenType.EMBOSS_MAP) {
-            texGenType = GX.TexGenType.BUMP0 + embossLgt;
-            texGenSrc = GX.TexGenSrc.TEXCOORD0 + embossSrc;
-        } else if (tgType === TexGenType.COLOR_STRGBC0) {
-            texGenType = GX.TexGenType.SRTG;
-            texGenSrc = GX.TexGenSrc.COLOR0;
-        } else if (tgType === TexGenType.COLOR_STRGBC1) {
-            texGenType = GX.TexGenType.SRTG;
-            texGenSrc = GX.TexGenSrc.COLOR1;
-        }
-
-        const matrix: GX.TexGenMatrix = GX.TexGenMatrix.IDENTITY;
-
-        const dv = r.xfg(GX.XFRegister.XF_DUALTEX0_ID + i);
-        const postMatrix: GX.PostTexGenMatrix = ((dv >>> 0) & 0xFF) + GX.PostTexGenMatrix.PTTEXMTX0;
-        const normalize: boolean = !!((dv >>> 8) & 0x01);
-
-        texGens.push({ index: i, type: texGenType, source: texGenSrc, matrix, normalize, postMatrix });
-    }
-
-    // TEV stages.
-    const tevStages: GX_Material.TevStage[] = [];
-
-    interface TevOrder {
-        texMapId: GX.TexMapID;
-        texCoordId: GX.TexCoordID;
-        channelId: GX.RasColorChannelID;
-    }
-
-    const tevOrders: TevOrder[] = [];
-
-    // First up, parse RAS1_TREF into tev orders.
-    for (let i = 0; i < 8; i++) {
-        const v = r.bp[GX.BPRegister.RAS1_TREF_0_ID + i];
-        const ti0: GX.TexMapID =          (v >>>  0) & 0x07;
-        const tc0: GX.TexCoordID =        (v >>>  3) & 0x07;
-        const te0: boolean =           !!((v >>>  6) & 0x01);
-        const cc0: GX.RasColorChannelID = (v >>>  7) & 0x07;
-        // 7-10 = pad
-        const ti1: GX.TexMapID =          (v >>> 12) & 0x07;
-        const tc1: GX.TexCoordID =        (v >>> 15) & 0x07;
-        const te1: boolean =           !!((v >>> 18) & 0x01);
-        const cc1: GX.RasColorChannelID = (v >>> 19) & 0x07;
-
-        if (i*2+0 >= numTevs)
-            break;
-
-        const order0 = {
-            texMapId: te0 ? ti0 : GX.TexMapID.TEXMAP_NULL,
-            texCoordId: tc0,
-            channelId: cc0,
-        };
-        tevOrders.push(order0);
-
-        if (i*2+1 >= numTevs)
-            break;
-
-        const order1 = {
-            texMapId: te1 ? ti1 : GX.TexMapID.TEXMAP_NULL,
-            texCoordId: tc1,
-            channelId: cc1,
-        };
-        tevOrders.push(order1);
-    }
-
-    assert(tevOrders.length === numTevs);
-
-    // Now parse out individual stages.
-    for (let i = 0; i < tevOrders.length; i++) {
-        const color = r.bp[GX.BPRegister.TEV_COLOR_ENV_0_ID + (i * 2)];
-
-        const colorInD: GX.CombineColorInput = (color >>>  0) & 0x0F;
-        const colorInC: GX.CombineColorInput = (color >>>  4) & 0x0F;
-        const colorInB: GX.CombineColorInput = (color >>>  8) & 0x0F;
-        const colorInA: GX.CombineColorInput = (color >>> 12) & 0x0F;
-        const colorBias: GX.TevBias =          (color >>> 16) & 0x03;
-        const colorSub: boolean =           !!((color >>> 18) & 0x01);
-        const colorClamp: boolean =         !!((color >>> 19) & 0x01);
-        const colorScale: GX.TevScale =        (color >>> 20) & 0x03;
-        const colorRegId: GX.Register =        (color >>> 22) & 0x03;
-
-        const colorOp: GX.TevOp = findTevOp(colorBias, colorScale, colorSub);
-
-        // Find the op.
-        const alpha = r.bp[GX.BPRegister.TEV_ALPHA_ENV_0_ID + (i * 2)];
-
-        // TODO(jstpierre): swap table
-        const alphaInD: GX.CombineAlphaInput = (alpha >>>  4) & 0x07;
-        const alphaInC: GX.CombineAlphaInput = (alpha >>>  7) & 0x07;
-        const alphaInB: GX.CombineAlphaInput = (alpha >>> 10) & 0x07;
-        const alphaInA: GX.CombineAlphaInput = (alpha >>> 13) & 0x07;
-        const alphaBias: GX.TevBias =          (alpha >>> 16) & 0x03;
-        const alphaSub: boolean =           !!((alpha >>> 18) & 0x01);
-        const alphaClamp: boolean =         !!((alpha >>> 19) & 0x01);
-        const alphaScale: GX.TevScale =        (alpha >>> 20) & 0x03;
-        const alphaRegId: GX.Register =        (alpha >>> 22) & 0x03;
-
-        const alphaOp: GX.TevOp = findTevOp(alphaBias, alphaScale, alphaSub);
-
-        const ksel = r.bp[GX.BPRegister.TEV_KSEL_0_ID + (i >>> 1)];
-        const konstColorSel: GX.KonstColorSel = ((i & 1) ? (ksel >>> 14) : (ksel >>> 4)) & 0x1F;
-        const konstAlphaSel: GX.KonstAlphaSel = ((i & 1) ? (ksel >>> 19) : (ksel >>> 9)) & 0x1F;
-
-        const indCmd = r.bp[GX.BPRegister.IND_CMD0_ID + i];
-        const indTexStage: GX.IndTexStageID =   (indCmd >>>  0) & 0x03;
-        const indTexFormat: GX.IndTexFormat =   (indCmd >>>  2) & 0x03;
-        const indTexBiasSel: GX.IndTexBiasSel = (indCmd >>>  4) & 0x03;
-        // alpha sel
-        const indTexMatrix: GX.IndTexMtxID =    (indCmd >>>  9) & 0x0F;
-        const indTexWrapS: GX.IndTexWrap =      (indCmd >>> 13) & 0x07;
-        const indTexWrapT: GX.IndTexWrap =      (indCmd >>> 16) & 0x07;
-        const indTexUseOrigLOD: boolean =    !!((indCmd >>> 19) & 0x01);
-        const indTexAddPrev: boolean =       !!((indCmd >>> 20) & 0x01);
-
-        const tevStage: GX_Material.TevStage = {
-            index: i,
-
-            colorInA, colorInB, colorInC, colorInD, colorOp, colorBias, colorClamp, colorScale, colorRegId,
-            alphaInA, alphaInB, alphaInC, alphaInD, alphaOp, alphaBias, alphaClamp, alphaScale, alphaRegId,
-
-            texCoordId: tevOrders[i].texCoordId,
-            texMap: tevOrders[i].texMapId,
-            channelId: tevOrders[i].channelId,
-
-            konstColorSel, konstAlphaSel,
-
-            indTexStage, indTexFormat, indTexBiasSel, indTexMatrix, indTexWrapS, indTexWrapT, indTexAddPrev, indTexUseOrigLOD,
-        };
-
-        tevStages.push(tevStage);
-    }
-
-    // Alpha test.
-    const ap = r.bp[GX.BPRegister.TEV_ALPHAFUNC_ID];
-    const alphaTest: GX_Material.AlphaTest = {
-        referenceA: ((ap >>>  0) & 0xFF) / 0xFF,
-        referenceB: ((ap >>>  8) & 0xFF) / 0xFF,
-        compareA:    (ap >>> 16) & 0x07,
-        compareB:    (ap >>> 19) & 0x07,
-        op:          (ap >>> 22) & 0x07,
-    };
-
-    const cm0 = r.bp[GX.BPRegister.PE_CMODE0_ID];
-    const bmboe = (cm0 >>> 0) & 0x01;
-    const bmloe = (cm0 >>> 1) & 0x01;
-    const bmbop = (cm0 >>> 11) & 0x01;
-
-    const blendType: GX.BlendMode =
-        bmboe ? (bmbop ? GX.BlendMode.SUBTRACT : GX.BlendMode.BLEND) :
-        bmloe ? GX.BlendMode.LOGIC : GX.BlendMode.NONE;;
-    const dstFactor: GX.BlendFactor = (cm0 >>> 5) & 0x07;
-    const srcFactor: GX.BlendFactor = (cm0 >>> 8) & 0x07;
-    const logicOp: GX.LogicOp = (cm0 >>> 12) & 0x0F;
-    const blendMode: GX_Material.BlendMode = {
-        type: blendType,
-        dstFactor, srcFactor, logicOp,
-    };
-
-    const zm = r.bp[GX.BPRegister.PE_ZMODE_ID];
-    const depthTest = !!((zm >>> 0) & 0x01);
-    const depthFunc = (zm >>> 1) & 0x07;
-    const depthWrite = !!((zm >>> 4) & 0x01);
-    const ropInfo: GX_Material.RopInfo = {
-        blendMode, depthFunc, depthTest, depthWrite,
-    };
-
-    const indTexStages: GX_Material.IndTexStage[] = [];
-    const iref = r.bp[GX.BPRegister.RAS1_IREF_ID];
-    for (let i = 0; i < numInds; i++) {
-        const index = i;
-        const ss = r.bp[GX.BPRegister.RAS1_SS0_ID + (index >>> 2)];
-        const scaleS: GX.IndTexScale = (ss >>> ((0x08 * (i & 1)) + 0x00) & 0x0F);
-        const scaleT: GX.IndTexScale = (ss >>> ((0x08 * (i & 1)) + 0x04) & 0x0F);
-        const texture: GX.TexMapID = (iref >>> (0x06*i)) & 0x07;
-        const texCoordId: GX.TexCoordID = (iref >>> (0x06*i)) & 0x07;
-        indTexStages.push({ index, scaleS, scaleT, texCoordId, texture });
-    }
-
+    const texGens: GX_Material.TexGen[] = parseTexGens(r, numTexGens);
+    const tevStages: GX_Material.TevStage[] = parseTevStages(r, numTevs);
+    const indTexStages: GX_Material.IndTexStage[] = parseIndirectStages(r, numInds);
+    const ropInfo: GX_Material.RopInfo = parseRopInfo(r);
+    const alphaTest: GX_Material.AlphaTest = parseAlphaTest(r);
     const lightChannels: GX_Material.LightChannelControl[] = [];
 
     const gxMaterial: GX_Material.GXMaterial = {
-        index, name,
+        name,
         lightChannels, cullMode: GX.CullMode.NONE,
         tevStages, texGens,
         indTexStages, alphaTest, ropInfo,
     };
+
+    autoOptimizeMaterial(gxMaterial);
 
     return gxMaterial;
 }
@@ -640,8 +377,8 @@ function parseMDL0_MaterialEntry(buffer: ArrayBufferSlice, version: number): MDL
     const cullMode: GX.CullMode = view.getUint32(0x18);
     // matMisc
     const zCompLoc = !!view.getUint8(0x1C);
-    const lightset = view.getInt8(0x1D);
-    const fogset = view.getInt8(0x1E);
+    const lightSetIdx = view.getInt8(0x1D);
+    const fogIdx = view.getInt8(0x1E);
     // pad
     const indMethod0 = view.getUint8(0x20);
     const indMethod1 = view.getUint8(0x21);
@@ -669,7 +406,7 @@ function parseMDL0_MaterialEntry(buffer: ArrayBufferSlice, version: number): MDL
 
     const matDLOffs = view.getUint32(endOfHeaderOffs);
     const matDLSize = 32 + 128 + 64 + 160;
-    runDisplayListRegisters(r, buffer.subarray(matDLOffs, matDLSize));
+    displayListRegistersRun(r, buffer.subarray(matDLOffs, matDLSize));
 
     // Run the TEV registers as well.
     parseMDL0_TevEntry(buffer.subarray(tevOffs), r, numTevs);
@@ -678,7 +415,7 @@ function parseMDL0_MaterialEntry(buffer: ArrayBufferSlice, version: number): MDL
     const gxMaterial = parseMaterialEntry(r, index, name, numTexGens, numTevs, numInds);
     gxMaterial.cullMode = cullMode;
 
-    const indTexMatrices: mat2d[] = [];
+    const indTexMatrices: Float32Array[] = [];
     for (let i = 0; i < 3; i++) {
         const indTexScaleBase = 10;
         const indTexScaleBias = 0x11;
@@ -694,22 +431,23 @@ function parseMDL0_MaterialEntry(buffer: ArrayBufferSlice, version: number): MDL
         const scaleExp = (scaleBitsC << 4) | (scaleBitsB << 2) | scaleBitsA;
         const scale = Math.pow(2, scaleExp - indTexScaleBias - indTexScaleBase);
 
-        const ma = ((((mtxA >>>  0) & 0x07FF) << 21) >> 21) * scale;
-        const mc = ((((mtxA >>> 11) & 0x07FF) << 21) >> 21) * scale;
-        const mx = ((((mtxB >>>  0) & 0x07FF) << 21) >> 21) * scale;
-        const mb = ((((mtxB >>> 11) & 0x07FF) << 21) >> 21) * scale;
-        const md = ((((mtxC >>>  0) & 0x07FF) << 21) >> 21) * scale;
-        const my = ((((mtxC >>> 11) & 0x07FF) << 21) >> 21) * scale;
+        const p00 = ((((mtxA >>>  0) & 0x07FF) << 21) >> 21);
+        const p10 = ((((mtxA >>> 11) & 0x07FF) << 21) >> 21);
+        const p01 = ((((mtxB >>>  0) & 0x07FF) << 21) >> 21);
+        const p11 = ((((mtxB >>> 11) & 0x07FF) << 21) >> 21);
+        const p02 = ((((mtxC >>>  0) & 0x07FF) << 21) >> 21);
+        const p12 = ((((mtxC >>> 11) & 0x07FF) << 21) >> 21);
 
-        const mat = mat2d.fromValues(
-            ma, mb, mc, md, mx, my
-        );
-        indTexMatrices.push(mat);
+        const m = new Float32Array([
+            p00*scale, p01*scale, p02*scale, scale,
+            p10*scale, p11*scale, p12*scale, 0.0,
+        ]);
+        indTexMatrices.push(m);
     }
 
     // Colors.
-    const colorRegisters: GX_Material.Color[] = [];
-    const colorConstants: GX_Material.Color[] = [];
+    const colorRegisters: Color[] = [];
+    const colorConstants: Color[] = [];
     for (let i = 0; i < 8; i++) {
         const vl = r.kc[i * 2 + 0];
         const vh = r.kc[i * 2 + 1];
@@ -718,15 +456,15 @@ function parseMDL0_MaterialEntry(buffer: ArrayBufferSlice, version: number): MDL
         const ca = ((vl >>> 12) & 0x7FF) / 0xFF;
         const cb = ((vh >>>  0) & 0x7FF) / 0xFF;
         const cg = ((vh >>> 12) & 0x7FF) / 0xFF;
-        const c = new GX_Material.Color(cr, cg, cb, ca);
+        const c = colorNewFromRGBA(cr, cg, cb, ca);
         if (i < 4)
             colorRegisters[i] = c;
         else
             colorConstants[i - 4] = c;
     }
 
-    const colorMatRegs: GX_Material.Color[] = [];
-    const colorAmbRegs: GX_Material.Color[] = [];
+    const colorMatRegs: Color[] = [];
+    const colorAmbRegs: Color[] = [];
     let lightChannelTableIdx = endOfHeaderOffs + 0x3B4;
     for (let i = 0; i < 2; i++) {
         const enum ChanFlags {
@@ -750,33 +488,15 @@ function parseMDL0_MaterialEntry(buffer: ArrayBufferSlice, version: number): MDL
         const chanCtrlC = view.getUint32(lightChannelTableIdx + 0x0C);
         const chanCtrlA = view.getUint32(lightChannelTableIdx + 0x10);
 
-        const chanCtrlCMatSrc: GX.ColorSrc =             (chanCtrlC >>>  0) & 0x01;
-        const chanCtrlCEnable: boolean =              !!((chanCtrlC >>>  1) & 0x01);
-        const chanCtrlCLitMaskL: number =                (chanCtrlC >>>  2) & 0x0F;
-        const chanCtrlCAmbSrc: GX.ColorSrc =             (chanCtrlC >>>  6) & 0x01;
-        const chanCtrlCDiffuseFn: GX.DiffuseFunction =   (chanCtrlC >>>  7) & 0x03;
-        const chanCtrlCAttnEn: boolean =              !!((chanCtrlC >>>  9) & 0x01);
-        const chanCtrlCAttnSelect: boolean =          !!((chanCtrlC >>> 10) & 0x01);
-        const chanCtrlCLitMaskH: number =                (chanCtrlC >>> 11) & 0x0F;
-        const chanCtrlCLitMask: number = (chanCtrlCLitMaskH << 4) | chanCtrlCLitMaskL;
-        const chanCtrlCAttnFn = chanCtrlCAttnEn ? (chanCtrlCAttnSelect ? GX.AttenuationFunction.SPOT : GX.AttenuationFunction.SPEC) : GX.AttenuationFunction.NONE;
-        const colorChannel: GX_Material.ColorChannelControl = { lightingEnabled: chanCtrlCEnable, matColorSource: chanCtrlCMatSrc, ambColorSource: chanCtrlCAmbSrc, litMask: chanCtrlCLitMask, diffuseFunction: chanCtrlCDiffuseFn, attenuationFunction: chanCtrlCAttnFn };
+        const colorChannel = parseColorChannelControlRegister(chanCtrlC);
+        const alphaChannel = parseColorChannelControlRegister(chanCtrlA);
 
-        const chanCtrlAMatSrc: GX.ColorSrc =             (chanCtrlA >>>  0) & 0x01;
-        const chanCtrlAEnable: boolean =              !!((chanCtrlA >>>  1) & 0x01);
-        const chanCtrlALitMaskL: number =                (chanCtrlA >>>  2) & 0x0F;
-        const chanCtrlAAmbSrc: GX.ColorSrc =             (chanCtrlA >>>  6) & 0x01;
-        const chanCtrlADiffuseFn: GX.DiffuseFunction =   (chanCtrlA >>>  7) & 0x03;
-        const chanCtrlAAttnEn: boolean =              !!((chanCtrlA >>>  9) & 0x01);
-        const chanCtrlAAttnSelect: boolean =          !!((chanCtrlA >>> 10) & 0x01);
-        const chanCtrlALitMaskH: number =                (chanCtrlA >>> 11) & 0x0F;
-        const chanCtrlALitMask: number = (chanCtrlALitMaskH << 4) | chanCtrlALitMaskL;
-        const chanCtrlAAttnFn = chanCtrlAAttnEn ? (chanCtrlAAttnSelect ? GX.AttenuationFunction.SPOT : GX.AttenuationFunction.SPEC) : GX.AttenuationFunction.NONE;
-        const alphaChannel: GX_Material.ColorChannelControl = { lightingEnabled: chanCtrlAEnable, matColorSource: chanCtrlAMatSrc, ambColorSource: chanCtrlAAmbSrc, litMask: chanCtrlALitMask, diffuseFunction: chanCtrlADiffuseFn, attenuationFunction: chanCtrlAAttnFn };
+        colorMatRegs.push(colorNewFromRGBA(matColorR, matColorG, matColorB, matColorA));
+        colorAmbRegs.push(colorNewFromRGBA(ambColorR, ambColorG, ambColorB, ambColorA));
 
-        colorMatRegs.push(new GX_Material.Color(matColorR, matColorG, matColorB, matColorA));
-        colorAmbRegs.push(new GX_Material.Color(ambColorR, ambColorG, ambColorB, ambColorA));
-        gxMaterial.lightChannels.push({ colorChannel, alphaChannel });
+        if (i < numChans)
+            gxMaterial.lightChannels.push({ colorChannel, alphaChannel });
+
         lightChannelTableIdx += 0x14;
     }
 
@@ -794,7 +514,7 @@ function parseMDL0_MaterialEntry(buffer: ArrayBufferSlice, version: number): MDL
         const wrapT: GX.WrapMode = view.getUint32(texPlttInfoOffs + 0x1C);
         const minFilter: GX.TexFilter = view.getUint32(texPlttInfoOffs + 0x20);
         const magFilter: GX.TexFilter = view.getUint32(texPlttInfoOffs + 0x24);
-        const lodBias = view.getFloat32(texPlttInfoOffs + 0x28) * 1/8;
+        const lodBias = view.getFloat32(texPlttInfoOffs + 0x28);
         const maxAniso = view.getUint32(texPlttInfoOffs + 0x2C);
         const biasClamp = view.getUint8(texPlttInfoOffs + 0x30);
         const edgeLod = view.getUint8(texPlttInfoOffs + 0x31);
@@ -847,11 +567,13 @@ function parseMDL0_MaterialEntry(buffer: ArrayBufferSlice, version: number): MDL
             // No matrix needed.
             break;
         case MapMode.PROJECTION:
+            // Use the PNMTX0 matrix for projection.
+            gxMaterial.texGens[i].matrix = GX.TexGenMatrix.PNMTX0;
+            break;
         case MapMode.ENV_CAMERA:
         case MapMode.ENV_LIGHT:
-            // Use the PNMTX0 matrix for projection and environment.
-            // TODO(jstpierre): normal matrix for env camera / light.
-            gxMaterial.texGens[i].matrix = GX.TexGenMatrix.PNMTX0;
+            // Environment maps need a texture matrix.
+            gxMaterial.texGens[i].matrix = GX.TexGenMatrix.TEXMTX0 + i*3;
             break;
         }
 
@@ -864,7 +586,10 @@ function parseMDL0_MaterialEntry(buffer: ArrayBufferSlice, version: number): MDL
         texMtxTableIdx += 0x34;
     }
 
-    return { index, name, translucent, gxMaterial, samplers, texSrts, indTexMatrices, colorMatRegs, colorAmbRegs, colorRegisters, colorConstants };
+    return { index, name, translucent, lightSetIdx, fogIdx,
+        gxMaterial, samplers, texSrts, indTexMatrices,
+        colorMatRegs, colorAmbRegs, colorRegisters, colorConstants,
+    };
 }
 
 interface VtxBufferData {
@@ -877,10 +602,11 @@ interface VtxBufferData {
     stride: number;
 
     count: number;
-    data: ArrayBufferSlice;
+    buffer: ArrayBufferSlice;
+    offs: 0;
 }
 
-function parseMDL0_VtxData(buffer: ArrayBufferSlice, vtxAttrib: GX.VertexAttribute): VtxBufferData {
+function parseMDL0_VtxData(buffer: ArrayBufferSlice, vtxAttrib: GX.Attr): VtxBufferData {
     const view = buffer.createDataView();
     const dataOffs = view.getUint32(0x08);
     const nameOffs = view.getUint32(0x0C);
@@ -893,7 +619,7 @@ function parseMDL0_VtxData(buffer: ArrayBufferSlice, vtxAttrib: GX.VertexAttribu
     const count: number = view.getUint16(0x1E);
 
     // Color attributes don't have shift -- they store stride in the shift field.
-    if (vtxAttrib === GX.VertexAttribute.CLR0) {
+    if (vtxAttrib === GX.Attr.CLR0) {
         stride = compShift;
         compShift = 0;
     }
@@ -901,10 +627,12 @@ function parseMDL0_VtxData(buffer: ArrayBufferSlice, vtxAttrib: GX.VertexAttribu
     const numComponents = getFormatCompFlagsComponentCount(getAttributeFormatCompFlagsRaw(vtxAttrib, compCnt));
     const compSize = getAttributeComponentByteSizeRaw(compType);
     const compByteSize = numComponents * compSize;
-    const dataByteSize = compByteSize * count;
+    // Add some padding at the end for incorrectly formatted vertex buffers, as seen in some
+    // custom Mario Kart: Wii levels (like Night Factory).
+    const dataByteSize = compByteSize * count + 4;
 
     const data: ArrayBufferSlice = buffer.subarray(dataOffs, dataByteSize);
-    return { name, id, compCnt, compType, compShift, stride, count, data };
+    return { name, id, compCnt, compType, compShift, stride, count, buffer: data, offs: 0 };
 }
 
 interface InputVertexBuffers {
@@ -914,7 +642,7 @@ interface InputVertexBuffers {
     txc: VtxBufferData[];
 }
 
-function parseInputBufferSet(buffer: ArrayBufferSlice, vtxAttrib: GX.VertexAttribute, resDic: ResDicEntry[]): VtxBufferData[] {
+function parseInputBufferSet(buffer: ArrayBufferSlice, vtxAttrib: GX.Attr, resDic: ResDicEntry[]): VtxBufferData[] {
     const vtxBuffers: VtxBufferData[] = [];
     for (let i = 0; i < resDic.length; i++) {
         const entry = resDic[i];
@@ -927,10 +655,10 @@ function parseInputBufferSet(buffer: ArrayBufferSlice, vtxAttrib: GX.VertexAttri
 }
 
 function parseInputVertexBuffers(buffer: ArrayBufferSlice, vtxPosResDic: ResDicEntry[], vtxNrmResDic: ResDicEntry[], vtxClrResDic: ResDicEntry[], vtxTxcResDic: ResDicEntry[]): InputVertexBuffers {
-    const pos = parseInputBufferSet(buffer, GX.VertexAttribute.POS, vtxPosResDic);
-    const nrm = parseInputBufferSet(buffer, GX.VertexAttribute.NRM, vtxNrmResDic);
-    const clr = parseInputBufferSet(buffer, GX.VertexAttribute.CLR0, vtxClrResDic);
-    const txc = parseInputBufferSet(buffer, GX.VertexAttribute.TEX0, vtxTxcResDic);
+    const pos = parseInputBufferSet(buffer, GX.Attr.POS, vtxPosResDic);
+    const nrm = parseInputBufferSet(buffer, GX.Attr.NRM, vtxNrmResDic);
+    const clr = parseInputBufferSet(buffer, GX.Attr.CLR0, vtxClrResDic);
+    const txc = parseInputBufferSet(buffer, GX.Attr.TEX0, vtxTxcResDic);
     return { pos, nrm, clr, txc };
 }
 
@@ -1006,37 +734,37 @@ function parseMDL0_ShapeEntry(buffer: ArrayBufferSlice, inputBuffers: InputVerte
 
     // Run preprim. This should get us our VAT / VCD.
     const r = new DisplayListRegisters();
-    runDisplayListRegisters(r, buffer.subarray(prePrimDLOffs, prePrimDLSize));
+    displayListRegistersRun(r, buffer.subarray(prePrimDLOffs, prePrimDLSize));
 
     // VCD. Describes primitive data.
     const vcdL = r.cp[GX.CPRegister.VCD_LO_ID];
     const vcdH = r.cp[GX.CPRegister.VCD_HI_ID];
     const vcd: GX_VtxDesc[] = [];
 
-    vcd[GX.VertexAttribute.PNMTXIDX] =   { type: (vcdL >>>  0) & 0x01 };
-    vcd[GX.VertexAttribute.TEX0MTXIDX] = { type: (vcdL >>>  1) & 0x01 };
-    vcd[GX.VertexAttribute.TEX1MTXIDX] = { type: (vcdL >>>  2) & 0x01 };
-    vcd[GX.VertexAttribute.TEX2MTXIDX] = { type: (vcdL >>>  3) & 0x01 };
-    vcd[GX.VertexAttribute.TEX3MTXIDX] = { type: (vcdL >>>  4) & 0x01 };
-    vcd[GX.VertexAttribute.TEX4MTXIDX] = { type: (vcdL >>>  5) & 0x01 };
-    vcd[GX.VertexAttribute.TEX5MTXIDX] = { type: (vcdL >>>  6) & 0x01 };
-    vcd[GX.VertexAttribute.TEX6MTXIDX] = { type: (vcdL >>>  7) & 0x01 };
-    vcd[GX.VertexAttribute.TEX7MTXIDX] = { type: (vcdL >>>  8) & 0x01 };
-    vcd[GX.VertexAttribute.POS] =        { type: (vcdL >>>  9) & 0x03 };
-    vcd[GX.VertexAttribute.NRM] =        { type: (vcdL >>> 11) & 0x03 };
-    vcd[GX.VertexAttribute.CLR0] =       { type: (vcdL >>> 13) & 0x03 };
-    vcd[GX.VertexAttribute.CLR1] =       { type: (vcdL >>> 15) & 0x03 };
-    vcd[GX.VertexAttribute.TEX0] =       { type: (vcdH >>>  0) & 0x03 };
-    vcd[GX.VertexAttribute.TEX1] =       { type: (vcdH >>>  2) & 0x03 };
-    vcd[GX.VertexAttribute.TEX2] =       { type: (vcdH >>>  4) & 0x03 };
-    vcd[GX.VertexAttribute.TEX3] =       { type: (vcdH >>>  6) & 0x03 };
-    vcd[GX.VertexAttribute.TEX4] =       { type: (vcdH >>>  8) & 0x03 };
-    vcd[GX.VertexAttribute.TEX5] =       { type: (vcdH >>> 10) & 0x03 };
-    vcd[GX.VertexAttribute.TEX6] =       { type: (vcdH >>> 12) & 0x03 };
-    vcd[GX.VertexAttribute.TEX7] =       { type: (vcdH >>> 14) & 0x03 };
+    vcd[GX.Attr.PNMTXIDX] =   { type: (vcdL >>>  0) & 0x01 };
+    vcd[GX.Attr.TEX0MTXIDX] = { type: (vcdL >>>  1) & 0x01 };
+    vcd[GX.Attr.TEX1MTXIDX] = { type: (vcdL >>>  2) & 0x01 };
+    vcd[GX.Attr.TEX2MTXIDX] = { type: (vcdL >>>  3) & 0x01 };
+    vcd[GX.Attr.TEX3MTXIDX] = { type: (vcdL >>>  4) & 0x01 };
+    vcd[GX.Attr.TEX4MTXIDX] = { type: (vcdL >>>  5) & 0x01 };
+    vcd[GX.Attr.TEX5MTXIDX] = { type: (vcdL >>>  6) & 0x01 };
+    vcd[GX.Attr.TEX6MTXIDX] = { type: (vcdL >>>  7) & 0x01 };
+    vcd[GX.Attr.TEX7MTXIDX] = { type: (vcdL >>>  8) & 0x01 };
+    vcd[GX.Attr.POS] =        { type: (vcdL >>>  9) & 0x03 };
+    vcd[GX.Attr.NRM] =        { type: (vcdL >>> 11) & 0x03 };
+    vcd[GX.Attr.CLR0] =       { type: (vcdL >>> 13) & 0x03 };
+    vcd[GX.Attr.CLR1] =       { type: (vcdL >>> 15) & 0x03 };
+    vcd[GX.Attr.TEX0] =       { type: (vcdH >>>  0) & 0x03 };
+    vcd[GX.Attr.TEX1] =       { type: (vcdH >>>  2) & 0x03 };
+    vcd[GX.Attr.TEX2] =       { type: (vcdH >>>  4) & 0x03 };
+    vcd[GX.Attr.TEX3] =       { type: (vcdH >>>  6) & 0x03 };
+    vcd[GX.Attr.TEX4] =       { type: (vcdH >>>  8) & 0x03 };
+    vcd[GX.Attr.TEX5] =       { type: (vcdH >>> 10) & 0x03 };
+    vcd[GX.Attr.TEX6] =       { type: (vcdH >>> 12) & 0x03 };
+    vcd[GX.Attr.TEX7] =       { type: (vcdH >>> 14) & 0x03 };
 
     // Validate against our VCD flags.
-    for (let attr: GX.VertexAttribute = 0; attr <= GX.VertexAttribute.TEX7; attr++) {
+    for (let attr: GX.Attr = 0; attr <= GX.Attr.TEX7; attr++) {
         const vcdFlagsEnabled = !!(vcdFlags & (1 << attr));
         const vcdEnabled = !!(vcd[attr].type !== GX.AttrType.NONE);
         // Some community tooling doesn't export correct vcdFlags. Ignore it and use VCD regs as source of truth.
@@ -1055,63 +783,65 @@ function parseMDL0_ShapeEntry(buffer: ArrayBufferSlice, inputBuffers: InputVerte
 
     const vat: GX_VtxAttrFmt[] = [];
     //                                        compCnt               compType              compShift
-    vat[GX.VertexAttribute.POS]      = vatFmt((vatA >>>  0) & 0x01, (vatA >>>  1) & 0x07, (vatA >>>  4) & 0x1F);
+    vat[GX.Attr.POS]      = vatFmt((vatA >>>  0) & 0x01, (vatA >>>  1) & 0x07, (vatA >>>  4) & 0x1F);
     const nrm3 = !!(vatA >>> 31);
     const nrmCnt = nrm3 ? GX.CompCnt.NRM_NBT3:(vatA >>>  9) & 0x01;
-    vat[GX.VertexAttribute.NRM]      = vatFmt(nrmCnt,               (vatA >>> 10) & 0x07, 0);
-    vat[GX.VertexAttribute.CLR0]     = vatFmt((vatA >>> 13) & 0x01, (vatA >>> 14) & 0x07, 0);
-    vat[GX.VertexAttribute.CLR1]     = vatFmt((vatA >>> 17) & 0x01, (vatA >>> 18) & 0x07, 0);
-    vat[GX.VertexAttribute.TEX0]     = vatFmt((vatA >>> 21) & 0x01, (vatA >>> 22) & 0x07, (vatA >>> 25) & 0x1F);
-    vat[GX.VertexAttribute.TEX1]     = vatFmt((vatB >>>  0) & 0x01, (vatB >>>  1) & 0x07, (vatB >>>  4) & 0x1F);
-    vat[GX.VertexAttribute.TEX2]     = vatFmt((vatB >>>  9) & 0x01, (vatB >>> 10) & 0x07, (vatB >>> 13) & 0x1F);
-    vat[GX.VertexAttribute.TEX3]     = vatFmt((vatB >>> 18) & 0x01, (vatB >>> 19) & 0x07, (vatB >>> 22) & 0x1F);
-    vat[GX.VertexAttribute.TEX4]     = vatFmt((vatB >>> 27) & 0x01, (vatB >>> 28) & 0x07, (vatC >>>  0) & 0x1F);
-    vat[GX.VertexAttribute.TEX5]     = vatFmt((vatC >>>  5) & 0x01, (vatC >>>  6) & 0x07, (vatC >>>  9) & 0x1F);
-    vat[GX.VertexAttribute.TEX6]     = vatFmt((vatC >>> 14) & 0x01, (vatC >>> 15) & 0x07, (vatC >>> 18) & 0x1F);
-    vat[GX.VertexAttribute.TEX7]     = vatFmt((vatC >>> 23) & 0x01, (vatC >>> 24) & 0x07, (vatC >>> 27) & 0x1F);
+    vat[GX.Attr.NRM]      = vatFmt(nrmCnt,               (vatA >>> 10) & 0x07, 0);
+    vat[GX.Attr.CLR0]     = vatFmt((vatA >>> 13) & 0x01, (vatA >>> 14) & 0x07, 0);
+    vat[GX.Attr.CLR1]     = vatFmt((vatA >>> 17) & 0x01, (vatA >>> 18) & 0x07, 0);
+    vat[GX.Attr.TEX0]     = vatFmt((vatA >>> 21) & 0x01, (vatA >>> 22) & 0x07, (vatA >>> 25) & 0x1F);
+    vat[GX.Attr.TEX1]     = vatFmt((vatB >>>  0) & 0x01, (vatB >>>  1) & 0x07, (vatB >>>  4) & 0x1F);
+    vat[GX.Attr.TEX2]     = vatFmt((vatB >>>  9) & 0x01, (vatB >>> 10) & 0x07, (vatB >>> 13) & 0x1F);
+    vat[GX.Attr.TEX3]     = vatFmt((vatB >>> 18) & 0x01, (vatB >>> 19) & 0x07, (vatB >>> 22) & 0x1F);
+    vat[GX.Attr.TEX4]     = vatFmt((vatB >>> 27) & 0x01, (vatB >>> 28) & 0x07, (vatC >>>  0) & 0x1F);
+    vat[GX.Attr.TEX5]     = vatFmt((vatC >>>  5) & 0x01, (vatC >>>  6) & 0x07, (vatC >>>  9) & 0x1F);
+    vat[GX.Attr.TEX6]     = vatFmt((vatC >>> 14) & 0x01, (vatC >>> 15) & 0x07, (vatC >>> 18) & 0x1F);
+    vat[GX.Attr.TEX7]     = vatFmt((vatC >>> 23) & 0x01, (vatC >>> 24) & 0x07, (vatC >>> 27) & 0x1F);
 
     const vtxArrays: GX_Array[] = [];
     assert(idVtxPos >= 0);
     if (idVtxPos >= 0)
-        vtxArrays[GX.VertexAttribute.POS] = { buffer: inputBuffers.pos[idVtxPos].data, offs: 0 };
+        vtxArrays[GX.Attr.POS] = inputBuffers.pos[idVtxPos];
     if (idVtxNrm >= 0)
-        vtxArrays[GX.VertexAttribute.NRM] = { buffer: inputBuffers.nrm[idVtxNrm].data, offs: 0 };
+        vtxArrays[GX.Attr.NRM] = inputBuffers.nrm[idVtxNrm];
     if (idVtxClr0 >= 0)
-        vtxArrays[GX.VertexAttribute.CLR0] = { buffer: inputBuffers.clr[idVtxClr0].data, offs: 0 };
+        vtxArrays[GX.Attr.CLR0] = inputBuffers.clr[idVtxClr0];
     if (idVtxClr1 >= 0)
-        vtxArrays[GX.VertexAttribute.CLR1] = { buffer: inputBuffers.clr[idVtxClr1].data, offs: 0 };
+        vtxArrays[GX.Attr.CLR1] = inputBuffers.clr[idVtxClr1];
     if (idVtxTxc0 >= 0)
-        vtxArrays[GX.VertexAttribute.TEX0] = { buffer: inputBuffers.txc[idVtxTxc0].data, offs: 0 };
+        vtxArrays[GX.Attr.TEX0] = inputBuffers.txc[idVtxTxc0];
     if (idVtxTxc1 >= 0)
-        vtxArrays[GX.VertexAttribute.TEX1] = { buffer: inputBuffers.txc[idVtxTxc1].data, offs: 0 };
+        vtxArrays[GX.Attr.TEX1] = inputBuffers.txc[idVtxTxc1];
     if (idVtxTxc2 >= 0)
-        vtxArrays[GX.VertexAttribute.TEX2] = { buffer: inputBuffers.txc[idVtxTxc2].data, offs: 0 };
+        vtxArrays[GX.Attr.TEX2] = inputBuffers.txc[idVtxTxc2];
     if (idVtxTxc3 >= 0)
-        vtxArrays[GX.VertexAttribute.TEX3] = { buffer: inputBuffers.txc[idVtxTxc3].data, offs: 0 };
+        vtxArrays[GX.Attr.TEX3] = inputBuffers.txc[idVtxTxc3];
     if (idVtxTxc4 >= 0)
-        vtxArrays[GX.VertexAttribute.TEX4] = { buffer: inputBuffers.txc[idVtxTxc4].data, offs: 0 };
+        vtxArrays[GX.Attr.TEX4] = inputBuffers.txc[idVtxTxc4];
     if (idVtxTxc5 >= 0)
-        vtxArrays[GX.VertexAttribute.TEX5] = { buffer: inputBuffers.txc[idVtxTxc5].data, offs: 0 };
+        vtxArrays[GX.Attr.TEX5] = inputBuffers.txc[idVtxTxc5];
     if (idVtxTxc6 >= 0)
-        vtxArrays[GX.VertexAttribute.TEX6] = { buffer: inputBuffers.txc[idVtxTxc6].data, offs: 0 };
+        vtxArrays[GX.Attr.TEX6] = inputBuffers.txc[idVtxTxc6];
     if (idVtxTxc7 >= 0)
-        vtxArrays[GX.VertexAttribute.TEX7] = { buffer: inputBuffers.txc[idVtxTxc7].data, offs: 0 };
+        vtxArrays[GX.Attr.TEX7] = inputBuffers.txc[idVtxTxc7];
 
     const vtxLoader = compileVtxLoader(vat, vcd);
     const loadedVertexLayout = vtxLoader.loadedVertexLayout;
     const loadedVertexData = vtxLoader.runVertices(vtxArrays, buffer.subarray(primDLOffs, primDLSize));
-    assert(loadedVertexData.totalVertexCount === numVertices);
+    if (loadedVertexData.totalVertexCount !== numVertices)
+        console.warn("Vertex count mismatch", loadedVertexData.totalVertexCount, numVertices);
 
     return { name, mtxIdx, loadedVertexLayout, loadedVertexData };
 }
 
-const enum NodeFlags {
-    SRT_IDENTITY = 0x00000001,
-    TRANS_ZERO   = 0x00000002,
-    ROT_ZERO     = 0x00000004,
-    SCALE_ONE    = 0x00000008,
-    SCALE_HOMO   = 0x00000010,
-    VISIBLE      = 0x00000100,
+export const enum NodeFlags {
+    SRT_IDENTITY      = 0x00000001,
+    TRANS_ZERO        = 0x00000002,
+    ROT_ZERO          = 0x00000004,
+    SCALE_ONE         = 0x00000008,
+    SCALE_HOMO        = 0x00000010,
+    VISIBLE           = 0x00000100,
+    REFER_BB_ANCESTOR = 0x00000400,
 }
 
 export const enum BillboardMode {
@@ -1130,14 +860,17 @@ export interface MDL0_NodeEntry {
     mtxId: number;
     flags: NodeFlags;
     billboardMode: BillboardMode;
+    billboardRefNodeId: number;
     modelMatrix: mat4;
-    bbox: AABB;
+    bbox: AABB | null;
     visible: boolean;
+    parentNodeId: number;
     forwardBindPose: mat4;
     inverseBindPose: mat4;
+    userData: ResUserData | null;
 }
 
-function parseMDL0_NodeEntry(buffer: ArrayBufferSlice): MDL0_NodeEntry {
+function parseMDL0_NodeEntry(buffer: ArrayBufferSlice, entryOffs: number, baseOffs: number): MDL0_NodeEntry {
     const view = buffer.createDataView();
     const nameOffs = view.getUint32(0x08);
     const name = readString(buffer, nameOffs);
@@ -1146,17 +879,20 @@ function parseMDL0_NodeEntry(buffer: ArrayBufferSlice): MDL0_NodeEntry {
     const mtxId = view.getUint32(0x10);
     const flags: NodeFlags = view.getUint32(0x14);
     const billboardMode: BillboardMode = view.getUint32(0x18);
-    const bbrefNodeId = view.getUint32(0x1C);
+    const billboardRefNodeId = view.getUint32(0x1C);
 
     const scaleX = view.getFloat32(0x20);
     const scaleY = view.getFloat32(0x24);
     const scaleZ = view.getFloat32(0x28);
-    const rotationX = view.getFloat32(0x2C);
-    const rotationY = view.getFloat32(0x30);
-    const rotationZ = view.getFloat32(0x34);
+    const rotationX = view.getFloat32(0x2C) * MathConstants.DEG_TO_RAD;
+    const rotationY = view.getFloat32(0x30) * MathConstants.DEG_TO_RAD;
+    const rotationZ = view.getFloat32(0x34) * MathConstants.DEG_TO_RAD;
     const translationX = view.getFloat32(0x38);
     const translationY = view.getFloat32(0x3C);
     const translationZ = view.getFloat32(0x40);
+
+    const modelMatrix = mat4.create();
+    computeModelMatrixSRT(modelMatrix, scaleX, scaleY, scaleZ, rotationX, rotationY, rotationZ, translationX, translationY, translationZ);
 
     // TODO(jstpierre): NW4R doesn't appear to use this anymore?
     const bboxMinX = view.getFloat32(0x44);
@@ -1170,8 +906,25 @@ function parseMDL0_NodeEntry(buffer: ArrayBufferSlice): MDL0_NodeEntry {
     if ((bboxMaxX - bboxMinX) > 0)
         bbox = new AABB(bboxMinX, bboxMinY, bboxMinZ, bboxMaxX, bboxMaxY, bboxMaxZ);
 
-    const modelMatrix = mat4.create();
-    calcModelMtx(modelMatrix, scaleX, scaleY, scaleZ, rotationX, rotationY, rotationZ, translationX, translationY, translationZ);
+    const toParentNode = view.getInt32(0x5C);
+    const toChildNode = view.getInt32(0x60);
+    const toNextSibling = view.getInt32(0x64);
+    const toPrevSibling = view.getInt32(0x68);
+    const toResUserData = view.getInt32(0x6C);
+
+    const userData = parseUserData(buffer, toResUserData);
+
+    let parentNodeId: number = -1;
+    if (toParentNode !== 0) {
+        // The root node should not have a parent.
+        assert(id > 0);
+
+        // The to*Node offsets are relative offsets from the start of this ResNode, in bytes.
+        // Since the nodes are tightly packed, we can find the proper index from the start of the
+        // node array. Nodes are 0xD0 in size, so the index is just this.
+
+        parentNodeId = ((entryOffs + toParentNode) - baseOffs) / 0xD0;
+    }
 
     const forwardBindPose00 = view.getFloat32(0x70);
     const forwardBindPose01 = view.getFloat32(0x74);
@@ -1213,7 +966,7 @@ function parseMDL0_NodeEntry(buffer: ArrayBufferSlice): MDL0_NodeEntry {
 
     const visible = !!(flags & NodeFlags.VISIBLE);
 
-    return { name, id, mtxId, flags, billboardMode, modelMatrix, bbox, visible, forwardBindPose, inverseBindPose };
+    return { name, id, userData, mtxId, flags, billboardMode, billboardRefNodeId, modelMatrix, bbox, visible, parentNodeId, forwardBindPose, inverseBindPose };
 }
 
 export const enum ByteCodeOp {
@@ -1350,8 +1103,7 @@ interface MDL0_SceneGraph {
 }
 
 function parseMDL0_SceneGraph(buffer: ArrayBufferSlice, byteCodeResDic: ResDicEntry[]): MDL0_SceneGraph {
-    const nodeTreeResDicEntry = byteCodeResDic.find((entry) => entry.name === "NodeTree");
-    assert(nodeTreeResDicEntry !== null);
+    const nodeTreeResDicEntry = assertExists(byteCodeResDic.find((entry) => entry.name === "NodeTree"));
     const nodeTreeBuffer = buffer.subarray(nodeTreeResDicEntry.offs);
     const nodeTreeOps = parseMDL0_NodeTreeBytecode(nodeTreeBuffer);
 
@@ -1388,6 +1140,9 @@ export interface MDL0 {
     sceneGraph: MDL0_SceneGraph;
     numWorldMtx: number;
     numViewMtx: number;
+    needNrmMtxArray: boolean;
+    needTexMtxArray: boolean;
+    mtxIdToNodeId: Int32Array;
 }
 
 function parseMDL0(buffer: ArrayBufferSlice): MDL0 {
@@ -1395,7 +1150,7 @@ function parseMDL0(buffer: ArrayBufferSlice): MDL0 {
 
     assert(readString(buffer, 0x00, 0x04) === 'MDL0');
     const version = view.getUint32(0x08);
-    const supportedVersions = [ 0x08, 0x09, 0x0B ];
+    const supportedVersions = [ 0x08, 0x09, 0x0A, 0x0B ];
     assert(supportedVersions.includes(version));
 
     let offs = 0x10;
@@ -1422,7 +1177,7 @@ function parseMDL0(buffer: ArrayBufferSlice): MDL0 {
     offs += 0x04; // Texture information
     offs += 0x04; // Palette information
 
-    if (version >= 0x0A) {
+    if (version >= 0x0B) {
         offs += 0x04; // User data
     }
 
@@ -1436,11 +1191,13 @@ function parseMDL0(buffer: ArrayBufferSlice): MDL0 {
     const numPolygons = view.getUint32(infoOffs + 0x14);
 
     const numViewMtx = view.getUint32(infoOffs + 0x1C);
-
-    const isValidBBox = view.getUint8(infoOffs + 0x22);
+    const needNrmMtxArray = !!view.getUint8(infoOffs + 0x20);
+    const needTexMtxArray = !!view.getUint8(infoOffs + 0x20);
+    const isValidBBox = !!view.getUint8(infoOffs + 0x22);
 
     const mtxIdToNodeIdOffs = infoOffs + view.getUint32(infoOffs + 0x24);
     const numWorldMtx = view.getUint32(mtxIdToNodeIdOffs + 0x00);
+    const mtxIdToNodeId = buffer.createTypedArray(Int32Array, mtxIdToNodeIdOffs + 0x04, numWorldMtx, Endianness.BIG_ENDIAN);
 
     // TODO(jstpierre): Skyward Sword doesn't use this.
     let bbox: AABB | null = null;
@@ -1473,17 +1230,16 @@ function parseMDL0(buffer: ArrayBufferSlice): MDL0 {
 
     const nodes: MDL0_NodeEntry[] = [];
     for (const nodeResDicEntry of nodeResDic) {
-        const node = parseMDL0_NodeEntry(buffer.subarray(nodeResDicEntry.offs));
+        const node = parseMDL0_NodeEntry(buffer.subarray(nodeResDicEntry.offs), nodeResDicEntry.offs, nodeResDic[0].offs);
         assert(node.name === nodeResDicEntry.name);
         nodes.push(node);
     }
 
     const sceneGraph = parseMDL0_SceneGraph(buffer, byteCodeResDic);
 
-    return { name, bbox, materials, shapes, nodes, sceneGraph, numWorldMtx, numViewMtx };
+    return { name, bbox, materials, shapes, nodes, sceneGraph, numWorldMtx, numViewMtx, needNrmMtxArray, needTexMtxArray, mtxIdToNodeId };
 }
 //#endregion
-
 //#region Animation Core
 export const enum LoopMode {
     ONCE = 0x00,
@@ -1533,10 +1289,6 @@ function getAnimFrame(anim: AnimationBase, frame: number): number {
     } else {
         throw "whoops";
     }
-}
-
-function lerp(k0: number, k1: number, t: number): number {
-    return k0 + (k1 - k0) * t;
 }
 
 function lerpPeriodic(k0: number, k1: number, t: number, kp: number = 180): number {
@@ -1611,6 +1363,55 @@ function sampleFloatAnimationTrack(track: FloatAnimationTrack, frame: number): n
         return sampleFloatAnimationTrackHermite(track, frame);
     else
         throw "whoops";
+}
+
+function lerpColor(k0: number, k1: number, t: number): number {
+    const k0r = (k0 >>> 24) & 0xFF;
+    const k0g = (k0 >>> 16) & 0xFF;
+    const k0b = (k0 >>>  8) & 0xFF;
+    const k0a = (k0 >>>  0) & 0xFF;
+
+    const k1r = (k1 >>> 24) & 0xFF;
+    const k1g = (k1 >>> 16) & 0xFF;
+    const k1b = (k1 >>>  8) & 0xFF;
+    const k1a = (k1 >>>  0) & 0xFF;
+
+    const r = lerp(k0r, k1r, t);
+    const g = lerp(k0g, k1g, t);
+    const b = lerp(k0b, k1b, t);
+    const a = lerp(k0a, k1a, t);
+    return (r << 24) | (g << 16) | (b << 8) | a;
+}
+
+function sampleAnimationTrackColor(frames: Uint32Array, frame: number): number {
+    const n = frames.length;
+    if (n === 1)
+        return frames[0];
+
+    if (frame === 0)
+        return frames[0];
+    else if (frame > n - 1)
+        return frames[n - 1];
+
+    // Find the first frame.
+    const idx0 = (frame | 0);
+    const k0 = frames[idx0];
+    const idx1 = idx0 + 1;
+    const k1 = frames[idx1];
+
+    const t = (frame - idx0);
+
+    return lerpColor(k0, k1, t);
+}
+
+function sampleAnimationTrackBoolean(frames: BitMap, animFrame: number): boolean {
+    // Constant tracks are of length 1.
+    if (frames.numBits === 1)
+        return frames.getBit(0);
+
+    // animFrame can return a partial keyframe, but boolean tracks are frame-specific.
+    // Resolve this by treating this as a stepped track, floored. e.g. 15.9 is keyframe 15.
+    return frames.getBit(animFrame | 0);
 }
 
 function makeConstantAnimationTrack(value: number): FloatAnimationTrack {
@@ -1708,8 +1509,50 @@ function parseAnimationTrackF96(buffer: ArrayBufferSlice): FloatAnimationTrack {
     }
     return { type: AnimationTrackType.HERMITE, frames };
 }
-//#endregion
 
+function parseAnimationTrackF96OrConst(buffer: ArrayBufferSlice, isConstant: boolean): FloatAnimationTrack {
+    const view = buffer.createDataView();
+
+    if (isConstant) {
+        const value = view.getFloat32(0x00);
+        return makeConstantAnimationTrack(value);
+    } else {
+        const animationTrackOffs = view.getUint32(0x00);
+        return parseAnimationTrackF96(buffer.slice(animationTrackOffs));
+    }
+}
+
+function parseAnimationTrackBoolean(buffer: ArrayBufferSlice, numKeyframes: number, isConstant: boolean, constantValue: boolean): BitMap {
+    if (isConstant) {
+        const nodeVisibility = new BitMap(1);
+        nodeVisibility.setBit(0, constantValue);
+        return nodeVisibility;
+    } else {
+        const nodeVisibility = new BitMap(numKeyframes);
+        const view = buffer.createDataView();
+
+        let trackIdx = 0x08;
+        for (let i = 0; i < numKeyframes; i += 32) {
+            const word = view.getUint32(trackIdx);
+            nodeVisibility.setWord(i >>> 5, word);
+            trackIdx += 0x04;
+        }
+
+        return nodeVisibility;
+    }
+}
+
+function parseAnimationTrackColor(buffer: ArrayBufferSlice, numKeyframes: number, isConstant: boolean): Uint32Array {
+    const view = buffer.createDataView();
+    if (isConstant) {
+        const color = view.getUint32(0x00);
+        return Uint32Array.of(color);
+    } else {
+        const animationTrackOffs = view.getUint32(0x00);
+        return buffer.createTypedArray(Uint32Array, animationTrackOffs, numKeyframes + 1, Endianness.BIG_ENDIAN);
+    }
+}
+//#endregion
 //#region SRT0
 export interface SRT0_TexData {
     scaleS: FloatAnimationTrack | null;
@@ -1730,11 +1573,11 @@ export interface SRT0 extends AnimationBase {
 }
 
 function findAnimationData_SRT0(srt0: SRT0, materialName: string, texMtxIndex: number): SRT0_TexData | null {
-    const matData: SRT0_MatData = srt0.matAnimations.find((m) => m.materialName === materialName);
+    const matData = srt0.matAnimations.find((m) => m.materialName === materialName);
     if (matData === undefined)
         return null;
 
-    const texData: SRT0_TexData = matData.texAnimations[texMtxIndex];
+    const texData = matData.texAnimations[texMtxIndex];
     if (texData === undefined)
         return null;
 
@@ -1766,15 +1609,7 @@ function parseSRT0_TexData(buffer: ArrayBufferSlice): SRT0_TexData {
 
     let animationTableIdx = 0x04;
     function nextAnimationTrack(isConstant: boolean): FloatAnimationTrack {
-        let animationTrack: FloatAnimationTrack;
-        if (isConstant) {
-            const value = view.getFloat32(animationTableIdx);
-            animationTrack = makeConstantAnimationTrack(value);
-        } else {
-            // Relative to the table idx.
-            const animationTrackOffs = animationTableIdx + view.getUint32(animationTableIdx);
-            animationTrack = parseAnimationTrackF96(buffer.slice(animationTrackOffs));
-        }
+        const animationTrack: FloatAnimationTrack = parseAnimationTrackF96OrConst(buffer.slice(animationTableIdx), isConstant);
         animationTableIdx += 0x04;
         return animationTrack;
     }
@@ -1856,8 +1691,6 @@ function parseSRT0(buffer: ArrayBufferSlice): SRT0 {
 }
 
 export class SRT0TexMtxAnimator {
-    private scratch = mat4.create();
-
     constructor(public animationController: AnimationController, public srt0: SRT0, public texData: SRT0_TexData) {
     }
 
@@ -1875,9 +1708,8 @@ export class SRT0TexMtxAnimator {
         calcTexMtx(dst, texMtxMode, scaleS, scaleT, rotation, translationS, translationT);
     }
 
-    public calcIndTexMtx(dst: mat2d): void {
-        this._calcTexMtx(this.scratch, TexMatrixMode.BASIC);
-        calc2dMtx(dst, this.scratch);
+    public calcIndTexMtx(dst: mat4): void {
+        this._calcTexMtx(dst, TexMatrixMode.Basic);
     }
 
     public calcTexMtx(dst: mat4): void {
@@ -1910,7 +1742,6 @@ export function bindSRT0Animator(animationController: AnimationController, srt0:
     return new SRT0TexMtxAnimator(animationController, srt0, texData);
 }
 //#endregion
-
 //#region PAT0
 interface PAT0_TexFrameData {
     frame: number;
@@ -1935,11 +1766,11 @@ export interface PAT0 extends AnimationBase {
 }
 
 function findAnimationData_PAT0(pat0: PAT0, materialName: string, texMapID: GX.TexMapID): PAT0_TexData | null {
-    const matData: PAT0_MatData = pat0.matAnimations.find((m) => m.materialName === materialName);
+    const matData = pat0.matAnimations.find((m) => m.materialName === materialName);
     if (matData === undefined)
         return null;
 
-    const texData: PAT0_TexData = matData.texAnimations[texMapID];
+    const texData = matData.texAnimations[texMapID];
     if (texData === undefined)
         return null;
 
@@ -2014,7 +1845,7 @@ function parsePAT0(buffer: ArrayBufferSlice): PAT0 {
 
     assert(readString(buffer, 0x00, 0x04) === 'PAT0');
     const version = view.getUint32(0x08);
-    const supportedVersions = [0x04];
+    const supportedVersions = [0x03, 0x04];
     assert(supportedVersions.includes(version));
 
     const texPatMatDataResDicOffs = view.getUint32(0x10);
@@ -2065,7 +1896,7 @@ function findFrameData<T extends { frame: number }>(frames: T[], frame: number):
     // Find the left-hand frame.
     let idx0 = frames.length;
     while (idx0-- > 0) {
-        if (frame > frames[idx0].frame)
+        if (frame >= frames[idx0].frame)
             break;
     }
 
@@ -2098,7 +1929,6 @@ export function bindPAT0Animator(animationController: AnimationController, pat0:
     return new PAT0TexAnimator(animationController, pat0, texData);
 }
 //#endregion
-
 //#region CLR0
 export enum AnimatableColor {
     MAT0,
@@ -2130,27 +1960,15 @@ export interface CLR0 extends AnimationBase {
 }
 
 function findAnimationData_CLR0(clr0: CLR0, materialName: string, color: AnimatableColor): CLR0_ColorData | null {
-    const matData: CLR0_MatData = clr0.matAnimations.find((m) => m.materialName === materialName);
+    const matData = clr0.matAnimations.find((m) => m.materialName === materialName);
     if (matData === undefined)
         return null;
 
-    const clrData: CLR0_ColorData = matData.clrAnimations[color];
+    const clrData = matData.clrAnimations[color];
     if (clrData === undefined)
         return null;
 
     return clrData;
-}
-
-function parseColorDataFrames(buffer: ArrayBufferSlice, numKeyframes: number, isConstant: boolean): Uint32Array {
-    const view = buffer.createDataView();
-    let frames: Uint32Array;
-    if (isConstant) {
-        const color = view.getUint32(0x00);
-        return Uint32Array.of(color);
-    } else {
-        const animationTrackOffs = view.getUint32(0x00);
-        return buffer.createTypedArray(Uint32Array, animationTrackOffs, numKeyframes + 1, Endianness.BIG_ENDIAN);
-    }
 }
 
 function parseCLR0_MatData(buffer: ArrayBufferSlice, numKeyframes: number): CLR0_MatData {
@@ -2168,7 +1986,7 @@ function parseCLR0_MatData(buffer: ArrayBufferSlice, numKeyframes: number): CLR0
     let animationTableIdx = 0x08;
     function nextColorData(isConstant: boolean): CLR0_ColorData {
         const mask = view.getUint32(animationTableIdx + 0x00);
-        const frames = parseColorDataFrames(buffer.slice(animationTableIdx + 0x04), numKeyframes, isConstant);
+        const frames = parseAnimationTrackColor(buffer.slice(animationTableIdx + 0x04), numKeyframes, isConstant);
         animationTableIdx += 0x08;
         return { mask, frames };
     }
@@ -2219,56 +2037,17 @@ function parseCLR0(buffer: ArrayBufferSlice): CLR0 {
     return { name, loopMode, duration, matAnimations };
 }
 
-function lerpColor(k0: number, k1: number, t: number): number {
-    const k0r = (k0 >>> 24) & 0xFF;
-    const k0g = (k0 >>> 16) & 0xFF;
-    const k0b = (k0 >>>  8) & 0xFF;
-    const k0a = (k0 >>>  0) & 0xFF;
-
-    const k1r = (k1 >>> 24) & 0xFF;
-    const k1g = (k1 >>> 16) & 0xFF;
-    const k1b = (k1 >>>  8) & 0xFF;
-    const k1a = (k1 >>>  0) & 0xFF;
-
-    const r = lerp(k0r, k1r, t);
-    const g = lerp(k0g, k1g, t);
-    const b = lerp(k0b, k1b, t);
-    const a = lerp(k0a, k1a, t);
-    return (r << 24) | (g << 16) | (b << 8) | a;
-}
-
-function sampleColorData(frames: Uint32Array, frame: number): number {
-    const n = frames.length;
-    if (n === 1)
-        return frames[0];
-
-    if (frame === 0)
-        return frames[0];
-    else if (frame > n - 1)
-        return frames[n - 1];
-
-    // Find the first frame.
-    const idx0 = (frame | 0);
-    const k0 = frames[idx0];
-    const idx1 = idx0 + 1;
-    const k1 = frames[idx1];
-
-    const t = (frame - idx0);
-
-    return lerpColor(k0, k1, t);
-}
-
 export class CLR0ColorAnimator {
     constructor(public animationController: AnimationController, public clr0: CLR0, public clrData: CLR0_ColorData) {
     }
 
-    public calcColor(dst: GX_Material.Color, orig: GX_Material.Color): void {
+    public calcColor(dst: Color, orig: Color): void {
         const clrData = this.clrData;
 
         const frame = this.animationController.getTimeInFrames();
         const animFrame = getAnimFrame(this.clr0, frame);
 
-        const animColor: number = sampleColorData(clrData.frames, animFrame);
+        const animColor: number = sampleAnimationTrackColor(clrData.frames, animFrame);
         const c = (colorToRGBA8(orig) & clrData.mask) | animColor;
         colorFromRGBA8(dst, c);
     }
@@ -2281,7 +2060,6 @@ export function bindCLR0Animator(animationController: AnimationController, clr0:
     return new CLR0ColorAnimator(animationController, clr0, clrData);
 }
 //#endregion
-
 //#region CHR0
 interface CHR0_NodeData {
     nodeName: string;
@@ -2370,8 +2148,7 @@ function parseCHR0_NodeData(buffer: ArrayBufferSlice, numKeyframes: number): CHR
             const animationTrackOffs = view.getUint32(animationTableIdx);
             animationTrack = parseAnimationTrackC32(buffer.slice(animationTrackOffs), numKeyframes);
         } else {
-            console.warn("Unsupported animation track format", trackFormat);
-            animationTrack = null;
+            throw new Error(`Unsupported animation track format ${trackFormat}`);
         }
         animationTableIdx += 0x04;
         return animationTrack;
@@ -2459,7 +2236,7 @@ export class CHR0NodesAnimator {
     constructor(public animationController: AnimationController, public chr0: CHR0, private nodeData: CHR0_NodeData[]) {
     }
 
-    private vizNodeId: number = undefined;
+    private vizNodeId: number | undefined = undefined;
     private vizGraph: Graph;
     public viz(nodeId: number) {
         this.vizNodeId = nodeId;
@@ -2480,21 +2257,21 @@ export class CHR0NodesAnimator {
         if (nodeData.rotationX) {
             this.vizGraph.graphF('red', (t: number) => {
                 const animFrame = getAnimFrame(this.chr0, t + offt);
-                return sampleFloatAnimationTrack(nodeData.rotationX, animFrame);
+                return sampleFloatAnimationTrack(nodeData.rotationX!, animFrame);
             }, maxt);
         }
 
         if (nodeData.rotationY) {
             this.vizGraph.graphF('green', (t: number) => {
                 const animFrame = getAnimFrame(this.chr0, t + offt);
-                return sampleFloatAnimationTrack(nodeData.rotationY, animFrame);
+                return sampleFloatAnimationTrack(nodeData.rotationY!, animFrame);
             }, maxt);
         }
 
         if (nodeData.rotationZ) {
             this.vizGraph.graphF('blue', (t: number) => {
                 const animFrame = getAnimFrame(this.chr0, t + offt);
-                return sampleFloatAnimationTrack(nodeData.rotationZ, animFrame);
+                return sampleFloatAnimationTrack(nodeData.rotationZ!, animFrame);
             }, maxt);
         }
 
@@ -2525,15 +2302,15 @@ export class CHR0NodesAnimator {
         const scaleY = nodeData.scaleY ? sampleFloatAnimationTrack(nodeData.scaleY, animFrame) : 1;
         const scaleZ = nodeData.scaleZ ? sampleFloatAnimationTrack(nodeData.scaleZ, animFrame) : 1;
 
-        const rotationX = nodeData.rotationX ? sampleFloatAnimationTrack(nodeData.rotationX, animFrame) : 0;
-        const rotationY = nodeData.rotationY ? sampleFloatAnimationTrack(nodeData.rotationY, animFrame) : 0;
-        const rotationZ = nodeData.rotationZ ? sampleFloatAnimationTrack(nodeData.rotationZ, animFrame) : 0;
+        const rotationX = nodeData.rotationX ? sampleFloatAnimationTrack(nodeData.rotationX, animFrame) * MathConstants.DEG_TO_RAD : 0;
+        const rotationY = nodeData.rotationY ? sampleFloatAnimationTrack(nodeData.rotationY, animFrame) * MathConstants.DEG_TO_RAD : 0;
+        const rotationZ = nodeData.rotationZ ? sampleFloatAnimationTrack(nodeData.rotationZ, animFrame) * MathConstants.DEG_TO_RAD : 0;
 
         const translationX = nodeData.translationX ? sampleFloatAnimationTrack(nodeData.translationX, animFrame) : 0;
         const translationY = nodeData.translationY ? sampleFloatAnimationTrack(nodeData.translationY, animFrame) : 0;
         const translationZ = nodeData.translationZ ? sampleFloatAnimationTrack(nodeData.translationZ, animFrame) : 0;
 
-        calcModelMtx(dst, scaleX, scaleY, scaleZ, rotationX, rotationY, rotationZ, translationX, translationY, translationZ);
+        computeModelMatrixSRT(dst, scaleX, scaleY, scaleZ, rotationX, rotationY, rotationZ, translationX, translationY, translationZ);
         return true;
     }
 }
@@ -2554,15 +2331,517 @@ export function bindCHR0Animator(animationController: AnimationController, chr0:
     return new CHR0NodesAnimator(animationController, chr0, nodeData);
 }
 //#endregion
+//#region VIS0
+export interface VIS0_NodeData {
+    nodeName: string;
+    nodeVisibility: BitMap;
+}
 
+function parseVIS0_NodeData(buffer: ArrayBufferSlice, duration: number): VIS0_NodeData {
+    const enum Flags {
+        CONSTANT_VALUE = 0x01,
+        IS_CONSTANT = 0x02,
+    };
+
+    const view = buffer.createDataView();
+    const nodeNameOffs = view.getUint32(0x00);
+    const nodeName = readString(buffer, nodeNameOffs);
+    const flags: Flags = view.getUint32(0x04);
+
+    const nodeVisibility = parseAnimationTrackBoolean(buffer, duration, !!(flags & Flags.IS_CONSTANT), !!(flags & Flags.CONSTANT_VALUE));
+    return { nodeName, nodeVisibility };
+}
+
+export interface VIS0 extends AnimationBase {
+    nodeAnimations: VIS0_NodeData[];
+}
+
+function parseVIS0(buffer: ArrayBufferSlice): VIS0 {
+    const view = buffer.createDataView();
+
+    assert(readString(buffer, 0x00, 0x04) === 'VIS0');
+    const version = view.getUint32(0x08);
+    const supportedVersions = [0x03, 0x04];
+    assert(supportedVersions.includes(version));
+
+    const visNodeDataResDicOffs = view.getUint32(0x10);
+    const visNodeDataResDic = parseResDic(buffer, visNodeDataResDicOffs);
+
+    let offs = 0x14;
+    if (version >= 0x04) {
+        // user data
+        offs += 0x04;
+    }
+
+    const nameOffs = view.getUint32(offs + 0x00);
+    const name = readString(buffer, nameOffs);
+    const duration = view.getUint16(offs + 0x08);
+    const numNodes = view.getUint16(offs + 0x0A);
+    const loopMode: LoopMode = view.getUint32(offs + 0x0C);
+
+    const nodeAnimations: VIS0_NodeData[] = [];
+    for (const visNodeEntry of visNodeDataResDic) {
+        const nodeData = parseVIS0_NodeData(buffer.slice(visNodeEntry.offs), duration);
+        nodeAnimations.push(nodeData);
+    }
+    assert(nodeAnimations.length === numNodes);
+
+    return { name, loopMode, duration, nodeAnimations };
+}
+
+export class VIS0NodesAnimator { 
+    constructor(public animationController: AnimationController, public vis0: VIS0, private nodeData: VIS0_NodeData[]) {
+    }
+
+    public calcVisibility(nodeId: number): boolean | null {
+        const nodeData = this.nodeData[nodeId];
+        if (!nodeData)
+            return null;
+
+        const frame = this.animationController.getTimeInFrames();
+        const animFrame = getAnimFrame(this.vis0, frame);
+
+        return sampleAnimationTrackBoolean(nodeData.nodeVisibility, animFrame);
+    }
+}
+
+export function bindVIS0Animator(animationController: AnimationController, vis0: VIS0, nodes: MDL0_NodeEntry[]): VIS0NodesAnimator | null {
+    const nodeData: VIS0_NodeData[] = [];
+    for (const nodeAnimation of vis0.nodeAnimations) {
+        const node = nodes.find((node) => node.name === nodeAnimation.nodeName);
+        if (!node)
+            continue;
+        nodeData[node.id] = nodeAnimation;
+    }
+
+    // No nodes found.
+    if (nodeData.length === 0)
+        return null;
+
+    return new VIS0NodesAnimator(animationController, vis0, nodeData);
+}
+//#endregion
+//#region SCN0
+export interface SCN0 extends AnimationBase {
+    name: string;
+    lightSets: SCN0_LightSet[];
+    ambLights: SCN0_AmbLight[];
+    lights: SCN0_Light[];
+    fogs: SCN0_Fog[];
+    cameras: SCN0_Camera[];
+}
+
+export interface SCN0_LightSet {
+    name: string;
+    refNumber: number;
+    ambLightId: number;
+    ambLightName: string;
+    lightIds: number[];
+    lightNames: string[];
+}
+
+function parseSCN0_LightSet(buffer: ArrayBufferSlice, version: number): SCN0_LightSet {
+    const view = buffer.createDataView();
+
+    const size = view.getUint32(0x00);
+
+    const nameOffs = view.getUint32(0x08);
+    const name = readString(buffer, nameOffs);
+    const index = view.getUint32(0x0C);
+    const refNumber = view.getUint32(0x10);
+
+    const ambLightNameOffs = view.getUint32(0x14);
+    const ambLightName = readString(buffer, ambLightNameOffs);
+    const ambLightId = -1;
+
+    const numLight = view.getUint8(0x1A);
+    // Padding
+
+    const lightIds: number[] = [];
+    const lightNames: string[] = [];
+    const lightNameTableOffs = 0x1C;
+    let lightNameTableIdx = lightNameTableOffs;
+    for (let i = 0; i < numLight; i++) {
+        const lightNameOffs = view.getUint32(lightNameTableIdx + 0x00);
+        lightNames.push(readString(buffer, lightNameTableOffs + lightNameOffs));
+        lightNameTableIdx += 0x04;
+        lightIds.push(-1);
+    }
+
+    return { name, refNumber, ambLightName, ambLightId, lightNames, lightIds };
+}
+
+export interface SCN0_AmbLight {
+    name: string;
+    refNumber: number;
+    hasColor: boolean;
+    hasAlpha: boolean;
+    color: Uint32Array;
+}
+
+function parseSCN0_AmbLight(buffer: ArrayBufferSlice, version: number, numKeyframes: number): SCN0_AmbLight {
+    const view = buffer.createDataView();
+
+    const size = view.getUint32(0x00);
+
+    const nameOffs = view.getUint32(0x08);
+    const name = readString(buffer, nameOffs);
+    const index = view.getUint32(0x0C);
+    const refNumber = view.getUint32(0x10);
+
+    const enum Flags {
+        HAS_COLOR = 1 << 0,
+        HAS_ALPHA = 1 << 1,
+
+        COLOR_CONSTANT = 1 << 31,
+    }
+    const flags: Flags = view.getUint32(0x14);
+
+    const isConstant = !!(flags & Flags.COLOR_CONSTANT);
+    const hasColor = !!(flags & Flags.HAS_COLOR);
+    const hasAlpha = !!(flags & Flags.HAS_ALPHA);
+    const color = parseAnimationTrackColor(buffer.slice(0x18), numKeyframes, isConstant);
+
+    return { name, refNumber, hasColor, hasAlpha, color };
+}
+
+export const enum SCN0_LightType {
+    POINT, DIRECTIONAL, SPOT,
+}
+
+export interface SCN0_Light {
+    name: string;
+    refNumber: number;
+    specLightObjIdx: number;
+    lightType: SCN0_LightType;
+    hasColor: boolean;
+    hasAlpha: boolean;
+    hasSpecular: boolean;
+
+    enable: BitMap;
+    posX: FloatAnimationTrack;
+    posY: FloatAnimationTrack;
+    posZ: FloatAnimationTrack;
+    color: Uint32Array;
+    aimX: FloatAnimationTrack;
+    aimY: FloatAnimationTrack;
+    aimZ: FloatAnimationTrack;
+
+    distFunc: GX.DistAttnFunction;
+    refDistance: FloatAnimationTrack;
+    refBrightness: FloatAnimationTrack;
+
+    spotFunc: GX.SpotFunction;
+    cutoff: FloatAnimationTrack;
+
+    specColor: Uint32Array;
+    shininess: FloatAnimationTrack;
+}
+
+function parseSCN0_Light(buffer: ArrayBufferSlice, version: number, numKeyframes: number): SCN0_Light {
+    const view = buffer.createDataView();
+
+    const size = view.getUint32(0x00);
+
+    const nameOffs = view.getUint32(0x08);
+    const name = readString(buffer, nameOffs);
+    const index = view.getUint32(0x0C);
+    const refNumber = view.getUint32(0x10);
+
+    const specLightObjIdx = view.getUint32(0x14);
+
+    const enum Flags {
+        ENABLE        = 1 << 2,
+        HAS_SPECULAR  = 1 << 3,
+        HAS_COLOR     = 1 << 4,
+        HAS_ALPHA     = 1 << 5,
+
+        POSX_CONSTANT          = 1 << 19,
+        POSY_CONSTANT          = 1 << 20,
+        POSZ_CONSTANT          = 1 << 21,
+        COLOR_CONSTANT         = 1 << 22,
+        ENABLE_CONSTANT        = 1 << 23,
+        AIMX_CONSTANT          = 1 << 24,
+        AIMY_CONSTANT          = 1 << 25,
+        AIMZ_CONSTANT          = 1 << 26,
+        CUTOFF_CONSTANT        = 1 << 27,
+        REFDISTANCE_CONSTANT   = 1 << 28,
+        REFBRIGHTNESS_CONSTANT = 1 << 29,
+        SPECCOLOR_CONSTANT     = 1 << 30,
+        SHININESS_CONSTANT     = 1 << 31,
+    }
+    const flags: Flags = view.getUint32(0x1C);
+
+    const lightType: SCN0_LightType = (flags & 0x03);
+
+    const hasColor = !!(flags & Flags.HAS_COLOR);
+    const hasAlpha = !!(flags & Flags.HAS_ALPHA);
+    const hasSpecular = !!(flags & Flags.HAS_SPECULAR);
+
+    const enable = parseAnimationTrackBoolean(buffer.slice(0x20), numKeyframes, !!(flags & Flags.ENABLE_CONSTANT), !!(flags & Flags.ENABLE));
+    const posX = parseAnimationTrackF96OrConst(buffer.slice(0x24), !!(flags & Flags.POSX_CONSTANT));
+    const posY = parseAnimationTrackF96OrConst(buffer.slice(0x28), !!(flags & Flags.POSY_CONSTANT));
+    const posZ = parseAnimationTrackF96OrConst(buffer.slice(0x2C), !!(flags & Flags.POSZ_CONSTANT));
+    const color = parseAnimationTrackColor(buffer.slice(0x30), numKeyframes, !!(flags & Flags.COLOR_CONSTANT));
+    const aimX = parseAnimationTrackF96OrConst(buffer.slice(0x34), !!(flags & Flags.AIMX_CONSTANT));
+    const aimY = parseAnimationTrackF96OrConst(buffer.slice(0x38), !!(flags & Flags.AIMY_CONSTANT));
+    const aimZ = parseAnimationTrackF96OrConst(buffer.slice(0x3C), !!(flags & Flags.AIMZ_CONSTANT));
+
+    const distFunc: GX.DistAttnFunction = view.getUint32(0x40);
+    const refDistance = parseAnimationTrackF96OrConst(buffer.slice(0x44), !!(flags & Flags.REFDISTANCE_CONSTANT));
+    const refBrightness = parseAnimationTrackF96OrConst(buffer.slice(0x48), !!(flags & Flags.REFBRIGHTNESS_CONSTANT));
+
+    const spotFunc: GX.SpotFunction = view.getUint32(0x4C);
+    const cutoff = parseAnimationTrackF96OrConst(buffer.slice(0x50), !!(flags & Flags.CUTOFF_CONSTANT));
+
+    const specColor = parseAnimationTrackColor(buffer.slice(0x54), numKeyframes, !!(flags & Flags.SPECCOLOR_CONSTANT));
+    const shininess = parseAnimationTrackF96OrConst(buffer.slice(0x58), !!(flags & Flags.SHININESS_CONSTANT));
+
+    return { name, refNumber, specLightObjIdx, lightType, hasColor, hasAlpha, hasSpecular,
+        enable, posX, posY, posZ, color, aimX, aimY, aimZ,
+        distFunc, refDistance, refBrightness,
+        spotFunc, cutoff,
+        specColor, shininess,
+    };
+}
+
+export interface SCN0_Fog {
+    name: string;
+    refNumber: number;
+    fogType: GX.FogType;
+    startZ: FloatAnimationTrack;
+    endZ: FloatAnimationTrack;
+    color: Uint32Array;
+}
+
+function parseSCN0_Fog(buffer: ArrayBufferSlice, version: number, numKeyframes: number): SCN0_Fog {
+    const view = buffer.createDataView();
+
+    const size = view.getUint32(0x00);
+
+    const nameOffs = view.getUint32(0x08);
+    const name = readString(buffer, nameOffs);
+    const index = view.getUint32(0x0C);
+    const refNumber = view.getUint32(0x10);
+
+    const enum Flags {
+        STARTZ_CONSTANT = 1 << 29,
+        ENDZ_CONSTANT   = 1 << 30,
+        COLOR_CONSTANT  = 1 << 31,
+    };
+    const flags: Flags = view.getUint32(0x14);
+
+    const fogType: GX.FogType = view.getUint32(0x18);
+    const startZ = parseAnimationTrackF96OrConst(buffer.slice(0x1C), !!(flags & Flags.STARTZ_CONSTANT));
+    const endZ = parseAnimationTrackF96OrConst(buffer.slice(0x20), !!(flags & Flags.ENDZ_CONSTANT));
+    const color = parseAnimationTrackColor(buffer.slice(0x24), numKeyframes, !!(flags & Flags.COLOR_CONSTANT));
+
+    return { name, refNumber, fogType,
+        startZ, endZ, color,
+    };
+}
+
+export const enum SCN0_CameraType {
+    ROTATE, AIM,
+}
+
+export interface SCN0_Camera {
+    name: string;
+    refNumber: number;
+    projType: GX.ProjectionType;
+    cameraType: SCN0_CameraType;
+
+    posX: FloatAnimationTrack;
+    posY: FloatAnimationTrack;
+    posZ: FloatAnimationTrack;
+    aspect: FloatAnimationTrack;
+    near: FloatAnimationTrack;
+    far: FloatAnimationTrack;
+
+    rotX: FloatAnimationTrack;
+    rotY: FloatAnimationTrack;
+    rotZ: FloatAnimationTrack;
+
+    aimX: FloatAnimationTrack;
+    aimY: FloatAnimationTrack;
+    aimZ: FloatAnimationTrack;
+    twist: FloatAnimationTrack;
+
+    perspFovy: FloatAnimationTrack;
+    orthoHeight: FloatAnimationTrack;
+}
+
+function parseSCN0_Camera(buffer: ArrayBufferSlice, version: number, numKeyframes: number): SCN0_Camera {
+    const view = buffer.createDataView();
+
+    const size = view.getUint32(0x00);
+
+    const nameOffs = view.getUint32(0x08);
+    const name = readString(buffer, nameOffs);
+    const index = view.getUint32(0x0C);
+    const refNumber = view.getUint32(0x10);
+
+    const projType: GX.ProjectionType = view.getUint32(0x14);
+
+    const enum Flags {
+        POSX_CONSTANT        = 1 << 17,
+        POSY_CONSTANT        = 1 << 18,
+        POSZ_CONSTANT        = 1 << 19,
+        ASPECT_CONSTANT      = 1 << 20,
+        NEAR_CONSTANT        = 1 << 21,
+        FAR_CONSTANT         = 1 << 22,
+        PERSPFOVY_CONSTANT   = 1 << 23,
+        ORTHOHEIGHT_CONSTANT = 1 << 24,
+        AIMX_CONSTANT        = 1 << 25,
+        AIMY_CONSTANT        = 1 << 26,
+        AIMZ_CONSTANT        = 1 << 27,
+        TWIST_CONSTANT       = 1 << 28,
+        ROTX_CONSTANT        = 1 << 29,
+        ROTY_CONSTANT        = 1 << 30,
+        ROTZ_CONSTANT        = 1 << 31,
+    };
+    const flags: Flags = view.getUint32(0x18);
+
+    const cameraType = (flags >>> 0) & 0x01;
+
+    const posX = parseAnimationTrackF96OrConst(buffer.slice(0x20), !!(flags & Flags.POSX_CONSTANT));
+    const posY = parseAnimationTrackF96OrConst(buffer.slice(0x24), !!(flags & Flags.POSY_CONSTANT));
+    const posZ = parseAnimationTrackF96OrConst(buffer.slice(0x28), !!(flags & Flags.POSZ_CONSTANT));
+    const aspect = parseAnimationTrackF96OrConst(buffer.slice(0x2C), !!(flags & Flags.ASPECT_CONSTANT));
+    const near = parseAnimationTrackF96OrConst(buffer.slice(0x30), !!(flags & Flags.NEAR_CONSTANT));
+    const far = parseAnimationTrackF96OrConst(buffer.slice(0x34), !!(flags & Flags.FAR_CONSTANT));
+
+    const rotX = parseAnimationTrackF96OrConst(buffer.slice(0x38), !!(flags & Flags.ROTX_CONSTANT));
+    const rotY = parseAnimationTrackF96OrConst(buffer.slice(0x3C), !!(flags & Flags.ROTY_CONSTANT));
+    const rotZ = parseAnimationTrackF96OrConst(buffer.slice(0x40), !!(flags & Flags.ROTZ_CONSTANT));
+
+    const aimX = parseAnimationTrackF96OrConst(buffer.slice(0x44), !!(flags & Flags.AIMX_CONSTANT));
+    const aimY = parseAnimationTrackF96OrConst(buffer.slice(0x48), !!(flags & Flags.AIMY_CONSTANT));
+    const aimZ = parseAnimationTrackF96OrConst(buffer.slice(0x4C), !!(flags & Flags.AIMZ_CONSTANT));
+    const twist = parseAnimationTrackF96OrConst(buffer.slice(0x50), !!(flags & Flags.TWIST_CONSTANT));
+
+    const perspFovy = parseAnimationTrackF96OrConst(buffer.slice(0x54), !!(flags & Flags.PERSPFOVY_CONSTANT));
+    const orthoHeight = parseAnimationTrackF96OrConst(buffer.slice(0x58), !!(flags & Flags.ORTHOHEIGHT_CONSTANT));
+
+    return { name, refNumber, projType, cameraType,
+        posX, posY, posZ, aspect, near, far,
+        rotX, rotY, rotZ,
+        aimX, aimY, aimZ, twist,
+        perspFovy, orthoHeight,
+    };
+}
+
+function parseSCN0(buffer: ArrayBufferSlice): SCN0 {
+    const view = buffer.createDataView();
+
+    assert(readString(buffer, 0x00, 0x04) === 'SCN0');
+    const version = view.getUint32(0x08);
+    const supportedVersions = [0x04, 0x05];
+    assert(supportedVersions.includes(version));
+
+    const scnTopLevelResDicOffs = view.getUint32(0x10);
+    const scnTopLevelResDic = parseResDic(buffer, scnTopLevelResDicOffs);
+
+    let offs = 0x28;
+
+    // user data
+    if (version >= 0x05)
+        offs += 0x04;
+
+    const nameOffs = view.getUint32(offs + 0x00);
+    const name = readString(buffer, nameOffs);
+
+    const lightSetEntry = scnTopLevelResDic.find((entry) => entry.name === 'LightSet(NW4R)');
+    const ambLightsEntry = scnTopLevelResDic.find((entry) => entry.name === 'AmbLights(NW4R)');
+    const lightsEntry = scnTopLevelResDic.find((entry) => entry.name === 'Lights(NW4R)');
+    const fogsEntry = scnTopLevelResDic.find((entry) => entry.name === 'Fogs(NW4R)');
+    const camerasEntry = scnTopLevelResDic.find((entry) => entry.name === 'Cameras(NW4R)');
+
+    const duration = view.getUint16(offs + 0x08);
+    const specularLightCount = view.getUint16(offs + 0x0A);
+    const loopMode: LoopMode = view.getUint32(offs + 0x0C);
+
+    const lightSets: SCN0_LightSet[] = [];
+    if (lightSetEntry !== undefined) {
+        const lightSetResDic = parseResDic(buffer, lightSetEntry.offs);
+        for (let i = 0; i < lightSetResDic.length; i++) {
+            const lightSetEntry = lightSetResDic[i];
+            const lightSet = parseSCN0_LightSet(buffer.subarray(lightSetEntry.offs), version);
+            assert(lightSet.name === lightSetEntry.name);
+            lightSets.push(lightSet);
+        }
+    }
+
+    const ambLights: SCN0_AmbLight[] = [];
+    if (ambLightsEntry !== undefined) {
+        const ambLightsResDic = parseResDic(buffer, ambLightsEntry.offs);
+        for (let i = 0; i < ambLightsResDic.length; i++) {
+            const ambLightEntry = ambLightsResDic[i];
+            const ambLight = parseSCN0_AmbLight(buffer.subarray(ambLightEntry.offs), version, duration);
+            assert(ambLight.name === ambLightEntry.name);
+            ambLights.push(ambLight);
+        }
+    }
+
+    const lights: SCN0_Light[] = [];
+    if (lightsEntry !== undefined) {
+        const lightsResDic = parseResDic(buffer, lightsEntry.offs);
+        for (let i = 0; i < lightsResDic.length; i++) {
+            const lightEntry = lightsResDic[i];
+            const light = parseSCN0_Light(buffer.subarray(lightEntry.offs), version, duration);
+            assert(light.name === lightEntry.name);
+            lights.push(light);
+        }
+    }
+
+    const fogs: SCN0_Fog[] = [];
+    if (fogsEntry !== undefined) {
+        const fogsResDic = parseResDic(buffer, fogsEntry.offs);
+        for (let i = 0; i < fogsResDic.length; i++) {
+            const fogEntry = fogsResDic[i];
+            const fog = parseSCN0_Fog(buffer.subarray(fogEntry.offs), version, duration);
+            assert(fog.name === fogEntry.name);
+            fogs.push(fog);
+        }
+    }
+
+    const cameras: SCN0_Camera[] = [];
+    if (camerasEntry !== undefined) {
+        const camerasResDic = parseResDic(buffer, camerasEntry.offs);
+        for (let i = 0; i < camerasResDic.length; i++) {
+            const cameraEntry = camerasResDic[i];
+            const camera = parseSCN0_Camera(buffer.subarray(cameraEntry.offs), version, duration);
+            assert(camera.name === cameraEntry.name);
+            cameras.push(camera);
+        }
+    }
+
+    // Do some post-processing on the light sets.
+    for (let i = 0; i < lightSets.length; i++) {
+        const lightSet = lightSets[i];
+        for (let j = 0; j < lightSet.lightNames.length; j++) {
+            if (lightSet.lightNames[j] !== "")
+                lightSet.lightIds[j] = lights.findIndex((light) => light.name === lightSet.lightNames[j]);
+        }
+
+        if (lightSet.ambLightName !== "")
+            lightSet.ambLightId = ambLights.findIndex((light) => light.name === lightSet.ambLightName);
+    }
+
+    return { name, duration, loopMode, lightSets, ambLights, lights, fogs, cameras };
+}
+//#endregion
 //#region RRES
 export interface RRES {
-    mdl0: MDL0[];
+    plt0: PLT0[];
     tex0: TEX0[];
+    mdl0: MDL0[];
     srt0: SRT0[];
     pat0: PAT0[];
     clr0: CLR0[];
     chr0: CHR0[];
+    vis0: VIS0[];
+    scn0: SCN0[];
 }
 
 export function parse(buffer: ArrayBufferSlice): RRES {
@@ -2592,15 +2871,15 @@ export function parse(buffer: ArrayBufferSlice): RRES {
     assert(readString(buffer, rootSectionOffs + 0x00, 0x04) === 'root');
     const rootResDic = parseResDic(buffer, rootSectionOffs + 0x08);
 
-    // Models
-    const mdl0: MDL0[] = [];
-    const modelsEntry = rootResDic.find((entry) => entry.name === '3DModels(NW4R)');
-    if (modelsEntry) {
-        const modelsResDic = parseResDic(buffer, modelsEntry.offs);
-        for (let i = 0; i < modelsResDic.length; i++) {
-            const mdl0_ = parseMDL0(buffer.subarray(modelsResDic[i].offs));
-            assert(mdl0_.name === modelsResDic[i].name);
-            mdl0.push(mdl0_);
+    // Palettes
+    const plt0: PLT0[] = [];
+    const palettesEntry = rootResDic.find((entry) => entry.name === 'Palettes(NW4R)');
+    if (palettesEntry) {
+        const palettesResDic = parseResDic(buffer, palettesEntry.offs);
+        for (const plt0Entry of palettesResDic) {
+            const plt0_ = parsePLT0(buffer.subarray(plt0Entry.offs));
+            assert(plt0_.name === plt0Entry.name);
+            plt0.push(plt0_);
         }
     }
 
@@ -2613,15 +2892,36 @@ export function parse(buffer: ArrayBufferSlice): RRES {
             const tex0_ = parseTEX0(buffer.subarray(tex0Entry.offs));
             assert(tex0_.name === tex0Entry.name);
             tex0.push(tex0_);
+
+            // Pair up textures with palettes.
+            if (tex0_.format === GX.TexFormat.C4 || tex0_.format === GX.TexFormat.C8 || tex0_.format === GX.TexFormat.C14X2) {
+                const plt0_ = assertExists(plt0.find((entry) => entry.name === tex0_.name));
+                tex0_.paletteFormat = plt0_.format;
+                tex0_.paletteData = plt0_.data;
+            }
+        }
+    }
+
+    // Models
+    const mdl0: MDL0[] = [];
+    const modelsEntry = rootResDic.find((entry) => entry.name === '3DModels(NW4R)');
+    if (modelsEntry) {
+        const modelsResDic = parseResDic(buffer, modelsEntry.offs);
+        for (let i = 0; i < modelsResDic.length; i++) {
+            const modelsEntry = modelsResDic[i];
+            const mdl0_ = parseMDL0(buffer.subarray(modelsEntry.offs));
+            assert(mdl0_.name === modelsEntry.name);
+            mdl0.push(mdl0_);
         }
     }
 
     // Tex SRT Animations
     const srt0: SRT0[] = [];
-    const animTexSrtsEntry = rootResDic.find((entry) => entry.name === 'AnmTexSrt(NW4R)');
-    if (animTexSrtsEntry) {
-        const animTexSrtResDic = parseResDic(buffer, animTexSrtsEntry.offs);
-        for (const srt0Entry of animTexSrtResDic) {
+    const anmTexSrtEntry = rootResDic.find((entry) => entry.name === 'AnmTexSrt(NW4R)');
+    if (anmTexSrtEntry) {
+        const anmTexSrtResDic = parseResDic(buffer, anmTexSrtEntry.offs);
+        for (let i = 0; i < anmTexSrtResDic.length; i++) {
+            const srt0Entry = anmTexSrtResDic[i];
             const srt0_ = parseSRT0(buffer.subarray(srt0Entry.offs));
             assert(srt0_.name === srt0Entry.name);
             srt0.push(srt0_);
@@ -2630,10 +2930,11 @@ export function parse(buffer: ArrayBufferSlice): RRES {
 
     // Tex Pattern Animations
     const pat0: PAT0[] = [];
-    const animTexPatsEntry = rootResDic.find((entry) => entry.name === 'AnmTexPat(NW4R)');
-    if (animTexPatsEntry) {
-        const animTexPatResDic = parseResDic(buffer, animTexPatsEntry.offs);
-        for (const pat0Entry of animTexPatResDic) {
+    const anmTexPatEntry = rootResDic.find((entry) => entry.name === 'AnmTexPat(NW4R)');
+    if (anmTexPatEntry) {
+        const anmTexPatResDic = parseResDic(buffer, anmTexPatEntry.offs);
+        for (let i = 0; i < anmTexPatResDic.length; i++) {
+            const pat0Entry = anmTexPatResDic[i];
             let pat0_: PAT0;
             try {
                 pat0_ = parsePAT0(buffer.subarray(pat0Entry.offs));
@@ -2645,10 +2946,11 @@ export function parse(buffer: ArrayBufferSlice): RRES {
 
     // Color Animations
     const clr0: CLR0[] = [];
-    const animClrsEntry = rootResDic.find((entry) => entry.name === 'AnmClr(NW4R)');
-    if (animClrsEntry) {
-        const animClrResDic = parseResDic(buffer, animClrsEntry.offs);
-        for (const clr0Entry of animClrResDic) {
+    const anmClrEntry = rootResDic.find((entry) => entry.name === 'AnmClr(NW4R)');
+    if (anmClrEntry) {
+        const anmClrResDic = parseResDic(buffer, anmClrEntry.offs);
+        for (let i = 0; i < anmClrResDic.length; i++) {
+            const clr0Entry = anmClrResDic[i];
             const clr0_ = parseCLR0(buffer.subarray(clr0Entry.offs));
             assert(clr0_.name === clr0Entry.name);
             clr0.push(clr0_);
@@ -2657,16 +2959,379 @@ export function parse(buffer: ArrayBufferSlice): RRES {
 
     // Node Animations
     const chr0: CHR0[] = [];
-    const animChrsEntry = rootResDic.find((entry) => entry.name === 'AnmChr(NW4R)');
-    if (animChrsEntry) {
-        const animChrResDic = parseResDic(buffer, animChrsEntry.offs);
-        for (const chr0Entry of animChrResDic) {
+    const anmChrEntry = rootResDic.find((entry) => entry.name === 'AnmChr(NW4R)');
+    if (anmChrEntry) {
+        const anmChrResDic = parseResDic(buffer, anmChrEntry.offs);
+        for (let i = 0; i < anmChrResDic.length; i++) {
+            const chr0Entry = anmChrResDic[i];
             const chr0_ = parseCHR0(buffer.subarray(chr0Entry.offs));
             assert(chr0_.name === chr0Entry.name);
             chr0.push(chr0_);
         }
     }
 
-    return { mdl0, tex0, srt0, pat0, clr0, chr0 };
+    // Visibility Animations
+    const vis0: VIS0[] = [];
+    const anmVisEntry = rootResDic.find((entry) => entry.name === 'AnmVis(NW4R)');
+    if (anmVisEntry) {
+        const anmVisResDic = parseResDic(buffer, anmVisEntry.offs);
+        for (let i = 0; i < anmVisResDic.length; i++) {
+            const vis0Entry = anmVisResDic[i];
+            const vis0_ = parseVIS0(buffer.subarray(vis0Entry.offs));
+            assert(vis0_.name === vis0Entry.name);
+            vis0.push(vis0_);
+        }
+    }
+
+    // Scene Animations
+    const scn0: SCN0[] = [];
+    const anmScnEntry = rootResDic.find((entry) => entry.name === 'AnmScn(NW4R)');
+    if (anmScnEntry) {
+        const anmScnResDic = parseResDic(buffer, anmScnEntry.offs);
+        for (let i = 0; i < anmScnResDic.length; i++) {
+            const scn0Entry = anmScnResDic[i];
+            const scn0_ = parseSCN0(buffer.subarray(scn0Entry.offs));
+            assert(scn0_.name === scn0Entry.name);
+            scn0.push(scn0_);
+        }
+    }
+
+    return { plt0, tex0, mdl0, srt0, pat0, clr0, chr0, vis0, scn0 };
+}
+
+const enum LightObjFlags {
+    ENABLE = 1 << 0,
+    HAS_COLOR = 1 << 1,
+    HAS_ALPHA = 1 << 2,
+    SPECULAR = 1 << 3,
+}
+
+export const enum LightObjSpace {
+    WORLD_SPACE,
+    VIEW_SPACE,
+}
+
+export class LightObj {
+    public flags: LightObjFlags = 0;
+    public light = new GX_Material.Light();
+    public space: LightObjSpace = LightObjSpace.WORLD_SPACE;
+
+    public isEnabled(): boolean {
+        return !!(this.flags & LightObjFlags.ENABLE);
+    }
+
+    public enable(): void {
+        this.flags |= LightObjFlags.ENABLE;
+    }
+
+    public disable(): void {
+        this.flags &= LightObjFlags.ENABLE;
+    }
+
+    public enableColor(): void {
+        this.flags |= LightObjFlags.HAS_COLOR;
+    }
+
+    public disableColor(): void {
+        this.flags &= LightObjFlags.HAS_COLOR;
+    }
+
+    public enableAlpha(): void {
+        this.flags |= LightObjFlags.HAS_ALPHA;
+    }
+
+    public disableAlpha(): void {
+        this.flags &= LightObjFlags.HAS_ALPHA;
+    }
+
+    public initLightColor(color: Color): void {
+        colorCopy(this.light.Color, color);
+    }
+
+    public initLightSpot(cutoffAngle: number, spotFunc: GX.SpotFunction): void {
+        GX_Material.lightSetSpot(this.light, cutoffAngle, spotFunc);
+    }
+
+    public initLightAttnA(k0: number, k1: number, k2: number): void {
+        vec3.set(this.light.CosAtten, k0, k1, k2);
+    }
+
+    public initLightDistAttn(refDist: number, refBrightness: number, distFunc: GX.DistAttnFunction): void {
+        GX_Material.lightSetDistAttn(this.light, refDist, refBrightness, distFunc);
+    }
+
+    public initLightAttnK(k0: number, k1: number, k2: number): void {
+        vec3.set(this.light.DistAtten, k0, k1, k2);
+    }
+}
+
+export class LightSet {
+    public lightObjIndexes: number[] = nArray(8, () => -1);
+    public ambLightObjIndex: number = -1;
+
+    public calcLights(m: GX_Material.Light[], lightSetting: LightSetting, viewMatrix: mat4): void {
+        for (let i = 0; i < this.lightObjIndexes.length; i++) {
+            const lightObjIndex = this.lightObjIndexes[i];
+
+            if (lightObjIndex < 0)
+                continue;
+
+            const lightObj = lightSetting.lightObj[lightObjIndex];
+            if (!!(lightObj.flags & LightObjFlags.ENABLE)) {
+                m[i].copy(lightObj.light);
+
+                if (lightObj.space === LightObjSpace.WORLD_SPACE) {
+                    GX_Material.lightSetWorldPositionViewMatrix(m[i], viewMatrix, lightObj.light.Position[0], lightObj.light.Position[1], lightObj.light.Position[2]);
+                    GX_Material.lightSetWorldDirectionNormalMatrix(m[i], viewMatrix, lightObj.light.Direction[0], lightObj.light.Direction[1], lightObj.light.Direction[2]);
+                } else if (lightObj.space === LightObjSpace.VIEW_SPACE) {
+                    // Parameters are in view-space; already copied correctly.
+                }
+            }
+        }
+    }
+
+    public calcAmbColorCopy(m: Color, lightSetting: LightSetting): void {
+        if (this.ambLightObjIndex < 0)
+            return;
+
+        colorCopy(m, lightSetting.ambLightObj[this.ambLightObjIndex]);
+    }
+
+    public calcLightSetLitMask(lightChannels: GX_Material.LightChannelControl[], lightSetting: LightSetting): boolean {
+        assert(lightChannels.length >= 1);
+
+        let maskc0 = 0;
+        let maska0 = 0;
+        let maskc1 = 0;
+        let maska1 = 0;
+
+        for (let i = 0; i < this.lightObjIndexes.length; i++) {
+            const lightObjIndex = this.lightObjIndexes[i];
+
+            if (lightObjIndex < 0)
+                continue;
+
+            const lightObj = lightSetting.lightObj[lightObjIndex];
+            const bit = 1 << i;
+            if (!!(lightObj.flags & LightObjFlags.ENABLE)) {
+                if (!(lightObj.flags & LightObjFlags.SPECULAR)) {
+                    // Diffuse
+                    if (!!(lightObj.flags & LightObjFlags.HAS_COLOR))
+                        maskc0 |= bit;
+                    if (!!(lightObj.flags & LightObjFlags.HAS_ALPHA))
+                        maska0 |= bit;
+                } else {
+                    // Specular
+                    if (!!(lightObj.flags & LightObjFlags.HAS_COLOR))
+                        maskc1 |= bit;
+                    if (!!(lightObj.flags & LightObjFlags.HAS_ALPHA))
+                        maska1 |= bit;
+                }
+            }
+        }
+
+        const chan0 = assertExists(lightChannels[0]);
+        let changed = false;
+
+        if (!chan0.colorChannel.lightingEnabled && maskc0 !== 0) {
+            chan0.colorChannel.lightingEnabled = true;
+            changed = true;
+        }
+
+        if (!chan0.alphaChannel.lightingEnabled && maska0 !== 0) {
+            chan0.alphaChannel.lightingEnabled = true;
+            changed = true;
+        }
+
+        if (chan0.colorChannel.lightingEnabled && chan0.colorChannel.litMask !== maskc0) {
+            chan0.colorChannel.litMask = maskc0;
+            changed = true;
+        }
+
+        if (chan0.alphaChannel.lightingEnabled && chan0.alphaChannel.litMask !== maska0) {
+            chan0.alphaChannel.litMask = maska0;
+            changed = true;
+        }
+
+        const chan1 = lightChannels[1];
+        if (chan1) {
+            if (chan1.colorChannel.lightingEnabled && chan1.colorChannel.litMask !== maskc1) {
+                chan1.colorChannel.litMask = maskc1;
+                changed = true;
+            }
+
+            if (chan1.alphaChannel.lightingEnabled && chan1.alphaChannel.litMask !== maska1) {
+                chan1.alphaChannel.litMask = maska0;
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+}
+
+export class LightSetting {
+    public ambLightObj: Color[];
+    public lightObj: LightObj[];
+    public lightSet: LightSet[];
+
+    constructor(numLight: number = 128, numLightSet: number = 128) {
+        this.ambLightObj = nArray(numLight, () => colorNewCopy(White));
+        this.lightObj = nArray(numLight, () => new LightObj());
+        this.lightSet = nArray(numLightSet, () => new LightSet());
+    }
+}
+
+export class SCN0Animator {
+    private scratchPos = vec3.create();
+    private scratchAim = vec3.create();
+
+    constructor(private animationController: AnimationController, public scn0: SCN0) {
+    }
+
+    public calcCameraPositionAim(camera: Camera, cameraIndex: number): void {
+        const animFrame = getAnimFrame(this.scn0, this.animationController.getTimeInFrames());
+        const scn0Cam = this.scn0.cameras[cameraIndex];
+
+        const posX = sampleFloatAnimationTrack(scn0Cam.posX, animFrame);
+        const posY = sampleFloatAnimationTrack(scn0Cam.posY, animFrame);
+        const posZ = sampleFloatAnimationTrack(scn0Cam.posZ, animFrame);
+        vec3.set(this.scratchPos, posX, posY, posZ);
+
+        if (scn0Cam.cameraType === SCN0_CameraType.AIM) {
+            const aimX = sampleFloatAnimationTrack(scn0Cam.aimX, animFrame);
+            const aimY = sampleFloatAnimationTrack(scn0Cam.aimY, animFrame);
+            const aimZ = sampleFloatAnimationTrack(scn0Cam.aimZ, animFrame);
+            vec3.set(this.scratchAim, aimX, aimY, aimZ);
+
+            mat4.lookAt(camera.viewMatrix, this.scratchPos, this.scratchAim, Vec3UnitY);
+
+            // TODO(jstpierre): What units is twist in?
+            // const twist = sampleFloatAnimationTrack(scn0Cam.twist, animFrame);
+            // mat4.rotateZ(camera.viewMatrix, camera.viewMatrix, twist);
+
+            mat4.invert(camera.worldMatrix, camera.viewMatrix);
+        } else {
+            // TODO(jstpierre): Support rotation.
+            assert(false);
+        }
+
+        camera.worldMatrixUpdated();
+    }
+
+    public calcCameraProjection(camera: Camera, cameraIndex: number): void {
+        const animFrame = getAnimFrame(this.scn0, this.animationController.getTimeInFrames());
+        const scn0Cam = this.scn0.cameras[cameraIndex];
+
+        if (scn0Cam.projType === GX.ProjectionType.PERSPECTIVE) {
+            const perspFovy = sampleFloatAnimationTrack(scn0Cam.perspFovy, animFrame);
+            const fovY = MathConstants.DEG_TO_RAD * perspFovy;
+            const aspect = sampleFloatAnimationTrack(scn0Cam.aspect, animFrame);
+            const near = sampleFloatAnimationTrack(scn0Cam.near, animFrame);
+            const far = sampleFloatAnimationTrack(scn0Cam.far, animFrame);
+            camera.setPerspective(fovY, aspect, near, far);
+        } else {
+            // TODO(jstpierre): Orthographic.
+        }
+    }
+
+    public calcCameraClipPlanes(camera: Camera, cameraIndex: number): void {
+        const animFrame = getAnimFrame(this.scn0, this.animationController.getTimeInFrames());
+        const scn0Cam = this.scn0.cameras[cameraIndex];
+
+        const near = sampleFloatAnimationTrack(scn0Cam.near, animFrame);
+        const far = sampleFloatAnimationTrack(scn0Cam.far, animFrame);
+
+        camera.setClipPlanes(near, far);
+    }
+
+    public calcLightSetting(lightSetting: LightSetting): void {
+        const animFrame = getAnimFrame(this.scn0, this.animationController.getTimeInFrames());
+
+        for (let i = 0; i < this.scn0.lightSets.length; i++) {
+            const entry = this.scn0.lightSets[i];
+            const dst = lightSetting.lightSet[entry.refNumber];
+
+            for (let j = 0; j < entry.lightIds.length; j++) {
+                if (entry.lightIds[j] !== -1)
+                    dst.lightObjIndexes[j] = this.scn0.lights[entry.lightIds[j]].refNumber;
+                else
+                    dst.lightObjIndexes[j] = -1;
+            }
+
+            if (entry.ambLightId !== -1)
+                dst.ambLightObjIndex = this.scn0.ambLights[entry.ambLightId].refNumber;
+            else
+                dst.ambLightObjIndex = -1;
+        }
+
+        for (let i = 0; i < this.scn0.lights.length; i++) {
+            const entry = this.scn0.lights[i];
+            const dst = assertExists(lightSetting.lightObj[entry.refNumber]);
+
+            const enable = sampleAnimationTrackBoolean(entry.enable, animFrame);
+            if (enable) {
+                dst.flags = LightObjFlags.ENABLE;
+
+                if (entry.hasColor)
+                    dst.flags |= LightObjFlags.HAS_COLOR;
+                if (entry.hasAlpha)
+                    dst.flags |= LightObjFlags.HAS_ALPHA;
+
+                colorFromRGBA8(dst.light.Color, sampleAnimationTrackColor(entry.color, animFrame));
+
+                const posX = sampleFloatAnimationTrack(entry.posX, animFrame);
+                const posY = sampleFloatAnimationTrack(entry.posY, animFrame);
+                const posZ = sampleFloatAnimationTrack(entry.posZ, animFrame);
+
+                if (entry.lightType === SCN0_LightType.DIRECTIONAL) {
+                    const aimX = sampleFloatAnimationTrack(entry.aimX, animFrame);
+                    const aimY = sampleFloatAnimationTrack(entry.aimY, animFrame);
+                    const aimZ = sampleFloatAnimationTrack(entry.aimZ, animFrame);
+                    // This is in world-space. When copying it to the material params, we'll multiply by the view matrix.
+                    vec3.set(dst.light.Position, (aimX - posX) * -1e10, (aimY - posY) * -1e10, (aimZ - posZ) * -1e10);
+                    vec3.set(dst.light.Direction, 0, 0, 0);
+                    vec3.set(dst.light.DistAtten, 1, 0, 0);
+                    vec3.set(dst.light.CosAtten, 1, 0, 0);
+                } else if (entry.lightType === SCN0_LightType.POINT) {
+                    vec3.set(dst.light.Position, posX, posY, posZ);
+                    GX_Material.lightSetSpot(dst.light, 0.0, GX.SpotFunction.OFF);
+                    const refDistance = sampleFloatAnimationTrack(entry.refDistance, animFrame);
+                    const refBrightness = sampleFloatAnimationTrack(entry.refBrightness, animFrame);
+                    GX_Material.lightSetDistAttn(dst.light, refDistance, refBrightness, entry.distFunc);
+                    vec3.set(dst.light.Direction, 0, 0, 0);
+                } else if (entry.lightType === SCN0_LightType.SPOT) {
+                    vec3.set(dst.light.Position, posX, posY, posZ);
+                    const cutoff = sampleFloatAnimationTrack(entry.cutoff, animFrame);
+                    GX_Material.lightSetSpot(dst.light, cutoff, entry.spotFunc);
+                    const refDistance = sampleFloatAnimationTrack(entry.refDistance, animFrame);
+                    const refBrightness = sampleFloatAnimationTrack(entry.refBrightness, animFrame);
+                    GX_Material.lightSetDistAttn(dst.light, refDistance, refBrightness, entry.distFunc);
+                    const aimX = sampleFloatAnimationTrack(entry.aimX, animFrame);
+                    const aimY = sampleFloatAnimationTrack(entry.aimY, animFrame);
+                    const aimZ = sampleFloatAnimationTrack(entry.aimZ, animFrame);
+                    vec3.set(dst.light.Direction, aimX - posX, aimY - posY, aimZ - posZ);
+                    vec3.normalize(dst.light.Direction, dst.light.Direction);
+                }
+
+                // TODO(jstpierre): Specular.
+            } else {
+                dst.flags &= ~LightObjFlags.ENABLE;
+            }
+        }
+
+        for (let i = 0; i < this.scn0.ambLights.length; i++) {
+            const entry = this.scn0.ambLights[i];
+            const dst = assertExists(lightSetting.ambLightObj[entry.refNumber]);
+
+            let color = sampleAnimationTrackColor(entry.color, animFrame);
+            if (!entry.hasColor)
+                color &= 0x000000FF;
+            if (!entry.hasAlpha)
+                color &= 0xFFFFFF00;
+
+            colorFromRGBA8(dst, color);
+        }
+    }
 }
 //#endregion

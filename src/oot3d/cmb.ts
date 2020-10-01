@@ -2,10 +2,11 @@
 import { assert, readString } from '../util';
 import ArrayBufferSlice from '../ArrayBufferSlice';
 import { mat4, vec4 } from 'gl-matrix';
-import { TextureFormat, decodeTexture, computeTextureByteSize } from './pica_texture';
+import { TextureFormat, decodeTexture, computeTextureByteSize, getTextureFormatFromGLFormat } from './pica_texture';
 import { GfxCullMode, GfxBlendMode, GfxBlendFactor, GfxMegaStateDescriptor, GfxCompareMode, GfxColorWriteMask, GfxChannelBlendState } from '../gfx/platform/GfxPlatform';
 import { makeMegaState } from '../gfx/helpers/GfxMegaStateDescriptorHelpers';
-import { Color, colorNewFromRGBA8, colorNew } from '../Color';
+import { Color, colorNewFromRGBA8, colorNewFromRGBA } from '../Color';
+import { reverseDepthForCompareMode } from '../gfx/helpers/ReversedDepthHelpers';
 
 export interface VatrChunk {
     dataBuffer: ArrayBufferSlice;
@@ -50,32 +51,6 @@ export interface Bone {
     translationZ: number;
 }
 
-export function calcModelMtx(dst: mat4, scaleX: number, scaleY: number, scaleZ: number, rotationX: number, rotationY: number, rotationZ: number, translationX: number, translationY: number, translationZ: number): void {
-    const sinX = Math.sin(rotationX), cosX = Math.cos(rotationX);
-    const sinY = Math.sin(rotationY), cosY = Math.cos(rotationY);
-    const sinZ = Math.sin(rotationZ), cosZ = Math.cos(rotationZ);
-
-    dst[0] =  scaleX * (cosY * cosZ);
-    dst[1] =  scaleX * (sinZ * cosY);
-    dst[2] =  scaleX * (-sinY);
-    dst[3] =  0.0;
-
-    dst[4] =  scaleY * (sinX * cosZ * sinY - cosX * sinZ);
-    dst[5] =  scaleY * (sinX * sinZ * sinY + cosX * cosZ);
-    dst[6] =  scaleY * (sinX * cosY);
-    dst[7] =  0.0;
-
-    dst[8] =  scaleZ * (cosX * cosZ * sinY + sinX * sinZ);
-    dst[9] =  scaleZ * (cosX * sinZ * sinY - sinX * cosZ);
-    dst[10] = scaleZ * (cosY * cosX);
-    dst[11] = 0.0;
-
-    dst[12] = translationX;
-    dst[13] = translationY;
-    dst[14] = translationZ;
-    dst[15] = 1.0;
-}
-
 function readSklChunk(cmb: CMB, buffer: ArrayBufferSlice): void {
     const view = buffer.createDataView();
 
@@ -114,7 +89,7 @@ export enum TextureFilter {
     LINEAR = 0x2601,
     NEAREST_MIPMAP_NEAREST = 0x2700,
     LINEAR_MIPMAP_NEAREST = 0x2701,
-    NEAREST_MIPMIP_LINEAR = 0x2702,
+    NEAREST_MIPMAP_LINEAR = 0x2702,
     LINEAR_MIPMAP_LINEAR = 0x2703,
 }
 
@@ -211,10 +186,26 @@ export interface TextureEnvironment {
     combinerBufferColor: Color;
 }
 
+export const enum TextureCoordinatorMappingMethod {
+    None,
+    UvCoordinateMap,
+    CameraCubeEnvMap,
+    CameraSphereEnvMap,
+    ProjectionMap,
+}
+
+export interface TextureCoordinator {
+    sourceCoordinate: number;
+    mappingMethod: TextureCoordinatorMappingMethod;
+    referenceCamera: number;
+    matrixMode: number;
+    textureMatrix: mat4;
+}
+
 export interface Material {
     index: number;
     textureBindings: TextureBinding[];
-    textureMatrices: mat4[];
+    textureCoordinators: TextureCoordinator[];
     constantColors: Color[];
     textureEnvironment: TextureEnvironment;
     alphaTestFunction: GfxCompareMode;
@@ -225,18 +216,18 @@ export interface Material {
 }
 
 export function calcTexMtx(dst: mat4, scaleS: number, scaleT: number, rotation: number, translationS: number, translationT: number): void {
-    const sinR = Math.sin(rotation);
-    const cosR = Math.cos(rotation);
+    const theta = rotation * Math.PI;
+    const sinR = Math.sin(theta);
+    const cosR = Math.cos(theta);
 
     mat4.identity(dst);
 
     dst[0]  = scaleS *  cosR;
-    dst[4]  = scaleT * -sinR;
-    dst[12] = translationS;
-
-    dst[1]  = scaleS *  sinR;
+    dst[1]  = scaleT * -sinR;
+    dst[4]  = scaleS *  sinR;
     dst[5]  = scaleT *  cosR;
-    dst[13] = translationT;
+    dst[12] = scaleS * ((-0.5 * cosR) - (0.5 * sinR - 0.5) - translationS);
+    dst[13] = scaleT * ((-0.5 * cosR) + (0.5 * sinR - 0.5) + translationT) + 1;
 }
 
 function translateCullModeFlags(cullModeFlags: number): GfxCullMode {
@@ -298,19 +289,23 @@ function readMatsChunk(cmb: CMB, buffer: ArrayBufferSlice) {
             bindingOffs += 0x18;
         }
 
-        let matricesOffs = offs + 0x58;
-        const textureMatrices: mat4[] = [];
+        let coordinatorsOffs = offs + 0x58;
+        const textureCoordinators: TextureCoordinator[] = [];
         for (let j = 0; j < 3; j++) {
-            const flags = view.getUint32(matricesOffs + 0x00, true);
-            const scaleS = view.getFloat32(matricesOffs + 0x04, true);
-            const scaleT = view.getFloat32(matricesOffs + 0x08, true);
-            const translationS = view.getFloat32(matricesOffs + 0x0C, true);
-            const translationT = view.getFloat32(matricesOffs + 0x10, true);
-            const rotation = view.getFloat32(matricesOffs + 0x14, true);
-            const texMtx = mat4.create();
-            calcTexMtx(texMtx, scaleS, scaleT, translationS, translationT, rotation);
-            textureMatrices.push(texMtx);
-            matricesOffs += 0x18;
+            // TODO(jstpierre): Unsure about how these are packed...
+            const matrixMode = view.getUint8(coordinatorsOffs + 0x00);
+            const referenceCamera = view.getUint8(coordinatorsOffs + 0x01);
+            const mappingMethod: TextureCoordinatorMappingMethod = view.getUint8(coordinatorsOffs + 0x02);
+            const sourceCoordinate = view.getUint8(coordinatorsOffs + 0x03);
+            const scaleS = view.getFloat32(coordinatorsOffs + 0x04, true);
+            const scaleT = view.getFloat32(coordinatorsOffs + 0x08, true);
+            const translationS = view.getFloat32(coordinatorsOffs + 0x0C, true);
+            const translationT = view.getFloat32(coordinatorsOffs + 0x10, true);
+            const rotation = view.getFloat32(coordinatorsOffs + 0x14, true);
+            const textureMatrix = mat4.create();
+            calcTexMtx(textureMatrix, scaleS, scaleT, rotation, translationS, translationT);
+            textureCoordinators.push({ sourceCoordinate, mappingMethod, referenceCamera, matrixMode, textureMatrix });
+            coordinatorsOffs += 0x18;
         }
 
         const unkColor0 = view.getUint32(offs + 0xB0, true);
@@ -329,7 +324,7 @@ function readMatsChunk(cmb: CMB, buffer: ArrayBufferSlice) {
         const bufferColorA = view.getFloat32(offs + 0xD8, true);
 
         const bumpTextureIndex = view.getUint16(offs + 0xDC, true);
-        const lightEnvBumpUsage = view.getUint16(offs + 0xDE, true);
+        const bumpMode = view.getUint16(offs + 0xDE, true);
 
         // Fragment lighting table.
         const reflectanceRSamplerIsAbs = !!view.getUint8(offs + 0xF0);
@@ -414,48 +409,47 @@ function readMatsChunk(cmb: CMB, buffer: ArrayBufferSlice) {
         assert(view.getUint8(offs + 0x139) == 0);
         assert(view.getUint16(offs + 0x13A, true) == 0);
 
-        const blendSrcFactorRGB: GfxBlendFactor = view.getUint16(offs + 0x13C, true);
-        const blendDstFactorRGB: GfxBlendFactor = view.getUint16(offs + 0x13E, true);
-        const blendFunctionRGB: GfxBlendMode = blendEnabled ? view.getUint16(offs + 0x140, true) : GfxBlendMode.NONE;
+        const blendSrcFactorRGB: GfxBlendFactor = blendEnabled ? view.getUint16(offs + 0x13C, true) : GfxBlendFactor.ONE;
+        const blendDstFactorRGB: GfxBlendFactor = blendEnabled ? view.getUint16(offs + 0x13E, true) : GfxBlendFactor.ZERO;
+        const blendFunctionRGB: GfxBlendMode = blendEnabled ? view.getUint16(offs + 0x140, true) : GfxBlendMode.ADD;
         const rgbBlendState: GfxChannelBlendState = {
             blendMode: blendFunctionRGB,
             blendDstFactor: blendDstFactorRGB,
             blendSrcFactor: blendSrcFactorRGB,
         };
-        // TODO(jstpierre): What is at 0x142?
-        const blendSrcFactorAlpha: GfxBlendFactor = view.getUint16(offs + 0x144, true);
-        const blendDstFactorAlpha: GfxBlendFactor = view.getUint16(offs + 0x146, true);
-        const blendFunctionAlpha: GfxBlendMode = blendEnabled ? view.getUint16(offs + 0x148, true) : GfxBlendMode.NONE;
+        // TODO(jstpierre): What is at 0x142? Logic op?
+        const blendSrcFactorAlpha: GfxBlendFactor = blendEnabled ? view.getUint16(offs + 0x144, true) : GfxBlendFactor.ONE;
+        const blendDstFactorAlpha: GfxBlendFactor = blendEnabled ? view.getUint16(offs + 0x146, true) : GfxBlendFactor.ZERO;
+        const blendFunctionAlpha: GfxBlendMode = blendEnabled ? view.getUint16(offs + 0x148, true) : GfxBlendMode.ADD;
         const alphaBlendState: GfxChannelBlendState = {
             blendMode: blendFunctionAlpha,
             blendDstFactor: blendDstFactorAlpha,
             blendSrcFactor: blendSrcFactorAlpha,
         };
-        // TODO(jstpierre): Padding here at 0x14A?
         const blendColorR = view.getFloat32(offs + 0x14C, true);
         const blendColorG = view.getFloat32(offs + 0x150, true);
         const blendColorB = view.getFloat32(offs + 0x154, true);
         const blendColorA = view.getFloat32(offs + 0x158, true);
-        const blendConstant = colorNew(blendColorR, blendColorG, blendColorB, blendColorA);
+        const blendConstant = colorNewFromRGBA(blendColorR, blendColorG, blendColorB, blendColorA);
 
         const isTransparent = blendEnabled;
         const renderFlags = makeMegaState({
             attachmentsState: [
                 {
-                    blendConstant,
                     colorWriteMask: GfxColorWriteMask.ALL,
                     rgbBlendState,
                     alphaBlendState,
                 },
             ],
-            depthCompare: depthTestFunction,
+            blendConstant,
+            depthCompare: reverseDepthForCompareMode(depthTestFunction),
             depthWrite: depthWriteEnabled,
             cullMode,
         });
 
-        const combinerBufferColor = colorNew(bufferColorR, bufferColorG, bufferColorB, bufferColorA);
+        const combinerBufferColor = colorNewFromRGBA(bufferColorR, bufferColorG, bufferColorB, bufferColorA);
         const textureEnvironment = { textureCombiners, combinerBufferColor };
-        cmb.materials.push({ index: i, textureBindings, textureMatrices, constantColors, textureEnvironment, alphaTestFunction, alphaTestReference, renderFlags, isTransparent, polygonOffset });
+        cmb.materials.push({ index: i, textureBindings, textureCoordinators, constantColors, textureEnvironment, alphaTestFunction, alphaTestReference, renderFlags, isTransparent, polygonOffset });
 
         offs += 0x15C;
 
@@ -477,7 +471,6 @@ export interface Texture {
     height: number;
     format: TextureFormat;
     levels: TextureLevel[];
-    totalTextureSize: number;
 }
 
 export function parseTexChunk(buffer: ArrayBufferSlice, texData: ArrayBufferSlice | null, cmbName: string = ''): Texture[] {
@@ -491,10 +484,11 @@ export function parseTexChunk(buffer: ArrayBufferSlice, texData: ArrayBufferSlic
     for (let i = 0; i < count; i++) {
         const size = view.getUint32(offs + 0x00, true);
         const maxLevel = view.getUint16(offs + 0x04, true);
-        const unk06 = view.getUint16(offs + 0x06, true);
+        const isETC1 = view.getUint8(offs + 0x06);
+        const isCubeMap = view.getUint8(offs + 0x07);
         const width = view.getUint16(offs + 0x08, true);
         const height = view.getUint16(offs + 0x0A, true);
-        const format = view.getUint32(offs + 0x0C, true);
+        const glFormat = view.getUint32(offs + 0x0C, true);
         let dataOffs = view.getUint32(offs + 0x10, true);
         const dataEnd = dataOffs + size;
         const texName = readString(buffer, offs + 0x14, 0x10);
@@ -503,6 +497,8 @@ export function parseTexChunk(buffer: ArrayBufferSlice, texData: ArrayBufferSlic
         offs += 0x24;
 
         const levels: TextureLevel[] = [];
+
+        const format = getTextureFormatFromGLFormat(glFormat);
 
         if (texData !== null) {
             let mipWidth = width, mipHeight = height;
@@ -515,7 +511,7 @@ export function parseTexChunk(buffer: ArrayBufferSlice, texData: ArrayBufferSlic
             }
         }
 
-        textures.push({ name, format, width, height, levels, totalTextureSize: size });
+        textures.push({ name, format, width, height, levels });
     }
 
     return textures;
@@ -556,9 +552,8 @@ function readVatrChunk(cmb: CMB, buffer: ArrayBufferSlice): void {
 
     const colorByteOffset = readSlice(baseOffs);
     const texCoord0ByteOffset = readSlice(baseOffs);
-    // TODO(jstpierre): Figure out how tex coords work, 'cuz this ain't it chief.
-    const texCoord1ByteOffset = -1; readSlice(baseOffs);
-    const texCoord2ByteOffset = -1; readSlice(baseOffs);
+    const texCoord1ByteOffset = readSlice(baseOffs);
+    const texCoord2ByteOffset = readSlice(baseOffs);
 
     const boneIndicesByteOffset = readSlice(baseOffs);
     const boneWeightsByteOffset = readSlice(baseOffs);

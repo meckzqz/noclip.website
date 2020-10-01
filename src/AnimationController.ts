@@ -1,4 +1,6 @@
 
+import { ViewerRenderInput } from "./viewer";
+
 export default class AnimationController {
     private timeInFrames: number = 0;
     public phaseFrames: number = 0;
@@ -14,10 +16,31 @@ export default class AnimationController {
     }
 
     public setTimeInMilliseconds(ms: number): void {
-        this.setTimeInFrames((ms / 1000) * this.fps);
+        this.setTimeInFrames(getTimeInFrames(ms, this.fps));
     }
 
     public setTimeInFrames(newTime: number): void {
         this.timeInFrames = newTime;
     }
+
+    public setTimeFromViewerInput(viewerInput: ViewerRenderInput): void {
+        this.setTimeInMilliseconds(viewerInput.time);
+    }
+
+    public quantizeTimeToFPS(): void {
+        this.timeInFrames = this.timeInFrames | 0;
+    }
+
+    public setPhaseInMilliseconds(ms: number): void {
+        this.phaseFrames = getTimeInFrames(ms, this.fps);
+    }
+
+    public setPhaseToCurrent(): void {
+        this.phaseFrames = -this.timeInFrames;
+    }
+}
+
+export function getTimeInFrames(milliseconds: number, fps: number): number {
+    const fpsRate = fps / 1000;
+    return milliseconds * fpsRate;
 }

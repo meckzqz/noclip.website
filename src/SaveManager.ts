@@ -1,7 +1,6 @@
 
-// @ts-ignore
-import { readFileSync } from 'fs';
-const defaultSaveStateData = JSON.parse(readFileSync('src/DefaultSaveStates.nclsp', { encoding: 'utf8' }));
+//@ts-ignore
+import * as defaultSaveStateData from './DefaultSaveStates.json';
 
 export type SettingCallback = (saveManager: SaveManager, key: string) => void;
 export type SaveStateCallback = (saveManager: SaveManager) => void;
@@ -31,7 +30,7 @@ export class SaveManager {
         window.localStorage.removeItem('CameraStates');
         window.localStorage.removeItem('SaveStates');
         for (let i = window.localStorage.length - 1; i >= 0; i--) {
-            const key = window.localStorage.key(i);
+            const key = window.localStorage.key(i)!;
             if (key.startsWith('SaveState_') && key.endsWith('/0'))
                 window.localStorage.removeItem(key);
         }
@@ -50,7 +49,7 @@ export class SaveManager {
     }
 
     public saveSetting<T>(key: string, value: T, force: boolean = false): void {
-        if (force || (this.loadSetting<T | null>(key, null) === value))
+        if (!force && this.loadSetting<T | null>(key, null) === value)
             return;
         window.localStorage.setItem(this.getSettingKey(key), JSON.stringify(value));
         for (let i = 0; i < this.settingListeners.length; i++)
@@ -122,7 +121,7 @@ export class SaveManager {
             return window.sessionStorage.getItem(key);
 
         if (location === SaveStateLocation.Defaults)
-            return defaultSaveStateData[key];
+            return defaultSaveStateData[key] || null;
 
         return null;
     }

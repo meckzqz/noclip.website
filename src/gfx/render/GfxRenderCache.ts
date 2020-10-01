@@ -1,120 +1,65 @@
 
-import { GfxBindingsDescriptor, GfxBindings, GfxDevice, GfxBufferBinding, GfxSamplerBinding, GfxRenderPipelineDescriptor, GfxRenderPipeline, GfxMegaStateDescriptor, GfxBindingLayoutDescriptor, GfxProgram, GfxInputLayoutDescriptor, GfxVertexAttributeDescriptor, GfxInputLayout } from "../platform/GfxPlatform";
-import { HashMap, EqualFunc, nullHashFunc, hashCodeNumbers } from "../../HashMap";
-import { DeviceProgram } from "../../Program";
+import { GfxBindingsDescriptor, GfxBindings, GfxDevice, GfxRenderPipelineDescriptor, GfxRenderPipeline, GfxProgram, GfxInputLayoutDescriptor, GfxInputLayout, GfxSamplerDescriptor, GfxSampler, GfxProgramDescriptor, GfxProgramDescriptorSimple } from "../platform/GfxPlatform";
+import { gfxBindingsDescriptorCopy, gfxRenderPipelineDescriptorCopy, gfxBindingsDescriptorEquals, gfxRenderPipelineDescriptorEquals, gfxInputLayoutDescriptorEquals, gfxSamplerDescriptorEquals, gfxInputLayoutDescriptorCopy } from '../platform/GfxPlatformUtil';
+import { HashMap, nullHashFunc, hashCodeNumberFinish, hashCodeNumberUpdate } from "../../HashMap";
+import { assert } from "../platform/GfxPlatformUtil";
 
-function arrayEqual<T>(a: T[], b: T[], e: EqualFunc<T>): boolean {
-    if (a.length !== b.length) return false;
-    for (let i = a.length - 1; i >= 0; i--)
-        if (!e(a[i], b[i]))
-            return false;
-    return true;
+function gfxProgramDescriptorSimpleEquals(a: GfxProgramDescriptorSimple, b: GfxProgramDescriptorSimple): boolean {
+    assert(a.preprocessedVert !== '' && b.preprocessedVert !== '');
+    assert(a.preprocessedFrag !== '' && b.preprocessedFrag !== '');
+    return a.preprocessedVert === b.preprocessedVert && a.preprocessedFrag === b.preprocessedFrag;
 }
 
-function gfxBufferBindingEquals(a: GfxBufferBinding, b: GfxBufferBinding): boolean {
-    return a.buffer === b.buffer && a.wordCount === b.wordCount && a.wordOffset === b.wordOffset;
+function gfxProgramDescriptorSimpleCopy(a: GfxProgramDescriptorSimple): GfxProgramDescriptorSimple {
+    const preprocessedVert = a.preprocessedVert;
+    const preprocessedFrag = a.preprocessedFrag;
+    return { preprocessedVert, preprocessedFrag };
 }
 
-function gfxSamplerBindingEquals(a: GfxSamplerBinding | null, b: GfxSamplerBinding | null): boolean {
-    if (a === null) return b === null;
-    if (b === null) return false;
-    return a.sampler === b.sampler && a.texture === b.texture;
+function gfxRenderPipelineDescriptorHash(a: GfxRenderPipelineDescriptor): number {
+    let hash = 0;
+    // Hash on the shader -- should be the thing we change the most.
+    hash = hashCodeNumberUpdate(hash, a.program.ResourceUniqueId);
+    return hash;
 }
 
-function gfxBindingsDescriptorEquals(a: GfxBindingsDescriptor, b: GfxBindingsDescriptor): boolean {
-    if (a.bindingLayout !== b.bindingLayout) return false;
-    if (!arrayEqual(a.uniformBufferBindings, b.uniformBufferBindings, gfxBufferBindingEquals)) return false;
-    if (!arrayEqual(a.samplerBindings, b.samplerBindings, gfxSamplerBindingEquals)) return false;
-    return true;
-}
-
-const scratch: number[] = Array(16);
 function gfxBindingsDescriptorHash(a: GfxBindingsDescriptor): number {
-    scratch.fill(0);
     // Hash on textures bindings.
+    let hash: number = 0;
     for (let i = 0; i < a.samplerBindings.length; i++) {
-        if (a.samplerBindings[i].texture !== null)
-            scratch[i] = a.samplerBindings[i].texture.ResourceUniqueId;
+        const binding = a.samplerBindings[i];
+        if (binding !== null && binding.gfxTexture !== null)
+            hash = hashCodeNumberUpdate(hash, binding.gfxTexture.ResourceUniqueId);
     }
-    return hashCodeNumbers(scratch);
-}
-
-function gfxMegaStateDescriptorEquals(a: GfxMegaStateDescriptor, b: GfxMegaStateDescriptor): boolean {
-    return (
-        a.blendDstFactor === b.blendDstFactor &&
-        a.blendSrcFactor === b.blendSrcFactor &&
-        a.blendMode === b.blendMode &&
-        a.cullMode === b.cullMode &&
-        a.depthCompare === b.depthCompare &&
-        a.depthWrite === b.depthWrite &&
-        a.frontFace === b.frontFace &&
-        a.polygonOffset === b.polygonOffset
-    );
-}
-
-function gfxBindingLayoutEquals(a: GfxBindingLayoutDescriptor, b: GfxBindingLayoutDescriptor): boolean {
-    return a.numSamplers === b.numSamplers && a.numUniformBuffers === b.numUniformBuffers;
-}
-
-function gfxProgramEquals(a: GfxProgram, b: GfxProgram): boolean {
-    return a.ResourceUniqueId === b.ResourceUniqueId;
-}
-
-function gfxRenderPipelineDescriptorEquals(a: GfxRenderPipelineDescriptor, b: GfxRenderPipelineDescriptor): boolean {
-    if (a.topology !== b.topology) return false;
-    if (a.inputLayout !== b.inputLayout) return false;
-    if (!gfxMegaStateDescriptorEquals(a.megaStateDescriptor, b.megaStateDescriptor)) return false;
-    if (!gfxProgramEquals(a.program, b.program)) return false;
-    if (!arrayEqual(a.bindingLayouts, b.bindingLayouts, gfxBindingLayoutEquals)) return false;
-    return true;
-}
-
-function gfxVertexAttributeDesciptorEquals(a: GfxVertexAttributeDescriptor, b: GfxVertexAttributeDescriptor): boolean {
-    return (
-        a.bufferIndex === b.bufferIndex &&
-        a.bufferByteOffset === b.bufferByteOffset &&
-        a.location === b.location &&
-        a.format === b.format &&
-        a.frequency === b.frequency &&
-        a.usesIntInShader === b.usesIntInShader
-    );
-}
-
-function gfxInputLayoutDescriptorEquals(a: GfxInputLayoutDescriptor, b: GfxInputLayoutDescriptor): boolean {
-    if (a.indexBufferFormat !== b.indexBufferFormat) return false;
-    if (!arrayEqual(a.vertexAttributeDescriptors, b.vertexAttributeDescriptors, gfxVertexAttributeDesciptorEquals)) return false;
-    return true;
-}
-
-// XXX(jstpierre): giant hack!!!
-// We need to cache programs at a higher level so we won't have to query program keys here.
-let _device: GfxDevice;
-function deviceProgramEquals(a: DeviceProgram, b: DeviceProgram): boolean {
-    return DeviceProgram.equals(_device, a, b);
+    return hashCodeNumberFinish(hash);
 }
 
 export class GfxRenderCache {
-    private gfxBindingsCache = new HashMap<GfxBindingsDescriptor, GfxBindings>(gfxBindingsDescriptorEquals, gfxBindingsDescriptorHash);
-    private gfxRenderPipelinesCache = new HashMap<GfxRenderPipelineDescriptor, GfxRenderPipeline>(gfxRenderPipelineDescriptorEquals, nullHashFunc);
+    private gfxBindingsCache = new HashMap<GfxBindingsDescriptor, GfxBindings>(gfxBindingsDescriptorEquals, gfxBindingsDescriptorHash, 64, 4);
+    private gfxRenderPipelinesCache = new HashMap<GfxRenderPipelineDescriptor, GfxRenderPipeline>(gfxRenderPipelineDescriptorEquals, gfxRenderPipelineDescriptorHash, 16, 4);
     private gfxInputLayoutsCache = new HashMap<GfxInputLayoutDescriptor, GfxInputLayout>(gfxInputLayoutDescriptorEquals, nullHashFunc);
-    private gfxProgramCache = new HashMap<DeviceProgram, GfxProgram>(deviceProgramEquals, nullHashFunc);
+    private gfxProgramCache = new HashMap<GfxProgramDescriptorSimple, GfxProgram>(gfxProgramDescriptorSimpleEquals, nullHashFunc);
+    private gfxSamplerCache = new HashMap<GfxSamplerDescriptor, GfxSampler>(gfxSamplerDescriptorEquals, nullHashFunc);
+
+    constructor() {
+    }
 
     public createBindings(device: GfxDevice, descriptor: GfxBindingsDescriptor): GfxBindings {
         let bindings = this.gfxBindingsCache.get(descriptor);
         if (bindings === null) {
-            bindings = device.createBindings(descriptor);
-            this.gfxBindingsCache.add(descriptor, bindings);
+            const descriptorCopy = gfxBindingsDescriptorCopy(descriptor);
+            bindings = device.createBindings(descriptorCopy);
+            this.gfxBindingsCache.add(descriptorCopy, bindings);
         }
         return bindings;
     }
 
     public createRenderPipeline(device: GfxDevice, descriptor: GfxRenderPipelineDescriptor): GfxRenderPipeline {
-        _device = device;
-
         let renderPipeline = this.gfxRenderPipelinesCache.get(descriptor);
         if (renderPipeline === null) {
-            renderPipeline = device.createRenderPipeline(descriptor);
-            this.gfxRenderPipelinesCache.add(descriptor, renderPipeline);
+            const descriptorCopy = gfxRenderPipelineDescriptorCopy(descriptor);
+            renderPipeline = device.createRenderPipeline(descriptorCopy);
+            this.gfxRenderPipelinesCache.add(descriptorCopy, renderPipeline);
         }
         return renderPipeline;
     }
@@ -122,21 +67,43 @@ export class GfxRenderCache {
     public createInputLayout(device: GfxDevice, descriptor: GfxInputLayoutDescriptor): GfxInputLayout {
         let inputLayout = this.gfxInputLayoutsCache.get(descriptor);
         if (inputLayout === null) {
-            inputLayout = device.createInputLayout(descriptor);
-            this.gfxInputLayoutsCache.add(descriptor, inputLayout);
+            const descriptorCopy = gfxInputLayoutDescriptorCopy(descriptor);
+            inputLayout = device.createInputLayout(descriptorCopy);
+            this.gfxInputLayoutsCache.add(descriptorCopy, inputLayout);
         }
         return inputLayout;
     }
 
-    public createProgram(device: GfxDevice, deviceProgram: DeviceProgram): GfxProgram {
-        _device = device;
-
-        let program = this.gfxProgramCache.get(deviceProgram);
+    public createProgramSimple(device: GfxDevice, gfxProgramDescriptorSimple: GfxProgramDescriptorSimple): GfxProgram {
+        let program = this.gfxProgramCache.get(gfxProgramDescriptorSimple);
         if (program === null) {
-            program = device.createProgram(deviceProgram);
-            this.gfxProgramCache.add(deviceProgram, program);
+            const descriptorCopy = gfxProgramDescriptorSimpleCopy(gfxProgramDescriptorSimple);
+            program = device.createProgramSimple(descriptorCopy);
+            this.gfxProgramCache.add(descriptorCopy, program);
         }
+
+        // TODO(jstpierre): Ugliness
+        if ('associate' in (gfxProgramDescriptorSimple as any)) {
+            const gfxProgramDescriptor = gfxProgramDescriptorSimple as GfxProgramDescriptor;
+            gfxProgramDescriptor.associate(device, program);
+        }
+
         return program;
+    }
+
+    public createProgram(device: GfxDevice, gfxProgramDescriptor: GfxProgramDescriptor): GfxProgram {
+        // TODO(jstpierre): Remove the ensurePreprocessed here... this should be done by higher-level code.
+        gfxProgramDescriptor.ensurePreprocessed(device.queryVendorInfo());
+        return this.createProgramSimple(device, gfxProgramDescriptor)
+    }
+
+    public createSampler(device: GfxDevice, descriptor: GfxSamplerDescriptor): GfxSampler {
+        let sampler = this.gfxSamplerCache.get(descriptor);
+        if (sampler === null) {
+            sampler = device.createSampler(descriptor);
+            this.gfxSamplerCache.add(descriptor, sampler);
+        }
+        return sampler;
     }
 
     public numBindings(): number {
@@ -148,9 +115,16 @@ export class GfxRenderCache {
             device.destroyBindings(bindings);
         for (const [descriptor, renderPipeline] of this.gfxRenderPipelinesCache.entries())
             device.destroyRenderPipeline(renderPipeline);
+        for (const [descriptor, inputLayout] of this.gfxInputLayoutsCache.entries())
+            device.destroyInputLayout(inputLayout);
         for (const [descriptor, program] of this.gfxProgramCache.entries())
             device.destroyProgram(program);
+        for (const [descriptor, sampler] of this.gfxSamplerCache.entries())
+            device.destroySampler(sampler);
         this.gfxBindingsCache.clear();
         this.gfxRenderPipelinesCache.clear();
+        this.gfxInputLayoutsCache.clear();
+        this.gfxProgramCache.clear();
+        this.gfxSamplerCache.clear();
     }
 }

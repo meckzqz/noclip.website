@@ -1,20 +1,110 @@
 
+import * as UI from '../ui';
 import * as Viewer from '../viewer';
 
-import { createModelInstance, BasicRenderer } from './scenes';
-
-import Progressable from '../Progressable';
 import ArrayBufferSlice from '../ArrayBufferSlice';
 import { readString, assert, assertExists } from '../util';
-import { fetchData } from '../fetch';
 import { mat4, quat } from 'gl-matrix';
-import * as RARC from './rarc';
-import { J3DTextureHolder, BMDModelInstance } from './render';
-import { BCK } from './j3d';
-import { GfxDevice } from '../gfx/platform/GfxPlatform';
+import * as RARC from '../Common/JSYSTEM/JKRArchive';
+import { BasicRenderTarget, standardFullClearRenderPassDescriptor } from '../gfx/helpers/RenderTargetHelpers';
+import { GXRenderHelperGfx, fillSceneParamsDataOnTemplate } from '../gx/gx_render';
+import { GfxDevice, GfxHostAccessPass, GfxRenderPass, GfxFrontFaceMode } from '../gfx/platform/GfxPlatform';
+import { J3DModelData } from '../Common/JSYSTEM/J3D/J3DGraphBase';
+import { J3DModelInstanceSimple } from '../Common/JSYSTEM/J3D/J3DGraphSimple';
+import { BCK, BMD, BTK, BRK, BTP } from '../Common/JSYSTEM/J3D/J3DLoader';
+import { SceneContext } from '../SceneBase';
+import { computeModelMatrixS } from '../MathHelpers';
+import { CameraController } from '../Camera';
 
 const id = "mkdd";
 const name = "Mario Kart: Double Dash!!";
+
+class MKDDRenderer implements Viewer.SceneGfx {
+    private renderTarget = new BasicRenderTarget();
+    public renderHelper: GXRenderHelperGfx;
+    public modelInstances: J3DModelInstanceSimple[] = [];
+    public rarc: RARC.JKRArchive[] = [];
+
+    constructor(device: GfxDevice) {
+        this.renderHelper = new GXRenderHelperGfx(device);
+    }
+
+    private setMirrored(mirror: boolean): void {
+        const negScaleMatrix = mat4.create();
+        computeModelMatrixS(negScaleMatrix, -1, 1, 1);
+        for (let i = 0; i < this.modelInstances.length; i++) {
+            mat4.mul(this.modelInstances[i].modelMatrix, negScaleMatrix, this.modelInstances[i].modelMatrix);
+            for (let j = 0; j < this.modelInstances[i].materialInstances.length; j++)
+                this.modelInstances[i].materialInstances[j].materialHelper.megaStateFlags.frontFace = mirror ? GfxFrontFaceMode.CCW : GfxFrontFaceMode.CW;
+        }
+    }
+
+    public adjustCameraController(c: CameraController) {
+        c.setSceneMoveSpeedMult(200/60);
+    }
+
+    public createPanels(): UI.Panel[] {
+        const renderHacksPanel = new UI.Panel();
+        renderHacksPanel.customHeaderBackgroundColor = UI.COOL_BLUE_COLOR;
+        renderHacksPanel.setTitle(UI.RENDER_HACKS_ICON, 'Render Hacks');
+        const mirrorCheckbox = new UI.Checkbox('Mirror Courses');
+        mirrorCheckbox.onchanged = () => {
+            this.setMirrored(mirrorCheckbox.checked);
+        };
+        renderHacksPanel.contents.appendChild(mirrorCheckbox.elem);
+        const enableVertexColorsCheckbox = new UI.Checkbox('Enable Vertex Colors', true);
+        enableVertexColorsCheckbox.onchanged = () => {
+            for (let i = 0; i < this.modelInstances.length; i++)
+                this.modelInstances[i].setVertexColorsEnabled(enableVertexColorsCheckbox.checked);
+        };
+        renderHacksPanel.contents.appendChild(enableVertexColorsCheckbox.elem);
+        const enableTextures = new UI.Checkbox('Enable Textures', true);
+        enableTextures.onchanged = () => {
+            for (let i = 0; i < this.modelInstances.length; i++)
+                this.modelInstances[i].setTexturesEnabled(enableTextures.checked);
+        };
+        renderHacksPanel.contents.appendChild(enableTextures.elem);
+
+        const layersPanel = new UI.LayerPanel(this.modelInstances);
+
+        return [layersPanel, renderHacksPanel];
+    }
+
+    public addModelInstance(scene: J3DModelInstanceSimple): void {
+        this.modelInstances.push(scene);
+    }
+
+    private prepareToRender(device: GfxDevice, hostAccessPass: GfxHostAccessPass, viewerInput: Viewer.ViewerRenderInput): void {
+        const renderInstManager = this.renderHelper.renderInstManager;
+
+        const template = this.renderHelper.pushTemplateRenderInst();
+        fillSceneParamsDataOnTemplate(template, viewerInput);
+        for (let i = 0; i < this.modelInstances.length; i++)
+            this.modelInstances[i].prepareToRender(device, renderInstManager, viewerInput);
+        renderInstManager.popTemplateRenderInst();
+
+        this.renderHelper.prepareToRender(device, hostAccessPass);
+    }
+
+    public render(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): GfxRenderPass {
+        const hostAccessPass = device.createHostAccessPass();
+        this.prepareToRender(device, hostAccessPass, viewerInput);
+        device.submitPass(hostAccessPass);
+
+        this.renderTarget.setParameters(device, viewerInput.backbufferWidth, viewerInput.backbufferHeight);
+        const passRenderer = this.renderTarget.createRenderPass(device, viewerInput.viewport, standardFullClearRenderPassDescriptor);
+        this.renderHelper.renderInstManager.drawOnPassRenderer(device, passRenderer);
+        this.renderHelper.renderInstManager.resetRenderInsts();
+        return passRenderer;
+    }
+
+    public destroy(device: GfxDevice): void {
+        this.renderHelper.destroy(device);
+        this.renderTarget.destroy(device);
+        for (let i = 0; i < this.modelInstances.length; i++)
+            this.modelInstances[i].destroy(device);
+    }
+}
 
 interface Obj {
     id: number;
@@ -65,47 +155,59 @@ class MKDDSceneDesc implements Viewer.SceneDesc {
         this.id = this.path;
     }
 
-    private spawnBMD(device: GfxDevice, renderer: BasicRenderer, rarc: RARC.RARC, basename: string, modelMatrix: mat4 = null): BMDModelInstance {
-        const bmdFile = rarc.findFile(`${basename}.bmd`);
-        assertExists(bmdFile);
-        const btkFile = rarc.findFile(`${basename}.btk`);
-        const brkFile = rarc.findFile(`${basename}.brk`);
-        const bmtFile = rarc.findFile(`${basename}.bmt`);
-        const scene = createModelInstance(device, renderer.renderHelper, renderer.textureHolder, bmdFile, btkFile, brkFile, null, bmtFile);
-        scene.name = basename;
+    private spawnBMD(device: GfxDevice, renderer: MKDDRenderer, rarc: RARC.JKRArchive, basename: string, modelMatrix: mat4 | null = null): J3DModelInstanceSimple {
+        const bmdFileData = assertExists(rarc.findFileData(`${basename}.bmd`));
+        const bmdModel = new J3DModelData(device, renderer.renderHelper.renderInstManager.gfxRenderCache, BMD.parse(bmdFileData));
+
+        const modelInstance = new J3DModelInstanceSimple(bmdModel);
+
+        const btkFileData = rarc.findFileData(`${basename}.btk`);
+        if (btkFileData !== null)
+            modelInstance.bindTTK1(BTK.parse(btkFileData));
+
+        const brkFileData = rarc.findFileData(`${basename}.brk`);
+        if (brkFileData !== null)
+            modelInstance.bindTRK1(BRK.parse(brkFileData));
+
+        const btpFileData = rarc.findFileData(`${basename}.btp`);
+        if (btpFileData !== null)
+            modelInstance.bindTPT1(BTP.parse(btpFileData));
+
+        modelInstance.name = basename;
         if (modelMatrix !== null)
-            mat4.copy(scene.modelMatrix, modelMatrix);
-        return scene;
+            mat4.copy(modelInstance.modelMatrix, modelMatrix);
+
+        return modelInstance;
     }
 
-    public createScene(device: GfxDevice): Progressable<Viewer.SceneGfx> {
+    public createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
+        const dataFetcher = context.dataFetcher;
         const path = `j3d/mkdd/Course/${this.path}`;
-        return fetchData(path).then((buffer: ArrayBufferSlice) => {
+        return dataFetcher.fetchData(path).then((buffer) => {
             const rarc = RARC.parse(buffer);
             // Find course name.
-            const bolFile = rarc.files.find((f) => f.name.endsWith('_course.bol'));
+            const bolFile = assertExists(rarc.files.find((f) => f.name.endsWith('_course.bol')));
             const courseName = bolFile.name.replace('_course.bol', '');
 
-            const renderer = new BasicRenderer(device, new J3DTextureHolder());
+            const renderer = new MKDDRenderer(device);
 
             if (rarc.findFile(`${courseName}_sky.bmd`))
                 renderer.addModelInstance(this.spawnBMD(device, renderer, rarc, `${courseName}_sky`));
 
             renderer.addModelInstance(this.spawnBMD(device, renderer, rarc, `${courseName}_course`));
 
-            const spawnObject = (obj: Obj, basename: string, animName: string = null) => {
+            const spawnObject = (obj: Obj, basename: string, animName: string | null = null) => {
                 const scene = this.spawnBMD(device, renderer, rarc, basename, obj.modelMatrix);
                 renderer.addModelInstance(scene);
                 let bckFile;
                 if (animName !== null) {
-                    bckFile = rarc.findFile(animName);
-                    assertExists(bckFile);
+                    bckFile = assertExists(rarc.findFile(animName));
                 } else {
                     bckFile = rarc.findFile(`${basename}_wait.bck`);
                 }
                 if (bckFile !== null) {
                     const bck = BCK.parse(bckFile.buffer);
-                    scene.bindANK1(bck.ank1);
+                    scene.bindANK1(bck);
                 }
             };
 
@@ -154,7 +256,6 @@ class MKDDSceneDesc implements Viewer.SceneDesc {
                 }
             }
 
-            renderer.finish(device);
             return renderer;
         });
     }

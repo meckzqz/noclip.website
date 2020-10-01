@@ -1,176 +1,215 @@
 
 /* @preserve The source code to this website is under the MIT license and can be found at https://github.com/magcius/noclip.website */
 
-// Parcel HMR workaround.
-// https://github.com/parcel-bundler/parcel/issues/289
-declare var module: any;
-if (module.hot) {
-    module.hot.dispose(() => {
-        window.location.reload();
-        throw new Error();
-    });
-}
+import { Viewer, SceneGfx, InitErrorCode, initializeViewer, makeErrorUI, resizeCanvas, ViewerUpdateInfo } from './viewer';
 
-import { SceneDesc, SceneGroup, Viewer, SceneGfx, getSceneDescs, InitErrorCode, initializeViewer, makeErrorUI } from './viewer';
+import * as Scenes_BanjoKazooie from './BanjoKazooie/scenes';
+import * as Scenes_Zelda_TwilightPrincess from './j3d/ztp_scenes';
+import * as Scenes_MarioKartDoubleDash from './j3d/mkdd_scenes';
+import * as Scenes_Zelda_TheWindWaker from './WindWaker/zww_scenes';
+import * as Scenes_SuperMarioSunshine from './j3d/sms_scenes';
+import * as Scenes_Pikmin2 from './j3d/pik2_scenes';
+import * as Scenes_SuperMarioGalaxy1 from './SuperMarioGalaxy/Scenes_SuperMarioGalaxy1';
+import * as Scenes_SuperMarioGalaxy2 from './SuperMarioGalaxy/Scenes_SuperMarioGalaxy2';
+import * as Scenes_SuperMario64DS from './SuperMario64DS/scenes';
+import * as Scenes_Zelda_OcarinaOfTime from './zelview/scenes';
+import * as Scenes_Zelda_OcarinaOfTime3D from './oot3d/oot3d_scenes';
+import * as Scenes_Zelda_MajorasMask3D from './oot3d/mm3d_scenes';
+import * as Scenes_LuigisMansion3D from './oot3d/lm3d_scenes';
+import * as Scenes_DarkSoulsCollision from './DarkSoulsCollisionData/scenes';
+import * as Scenes_MetroidPrime from './metroid_prime/scenes';
+import * as Scenes_DonkeyKong64 from './DonkeyKong64/scenes';
+import * as Scenes_DonkeyKongCountryReturns from './metroid_prime/dkcr_scenes';
+import * as Scenes_LuigisMansion from './luigis_mansion/scenes';
+import * as Scenes_PaperMario_TheThousandYearDoor from './PaperMarioTTYD/Scenes_PaperMarioTTYD';
+import * as Scenes_SuperPaperMario from './PaperMarioTTYD/Scenes_SuperPaperMario';
+import * as Scenes_MarioKartDS from './nns_g3d/Scenes_MarioKartDS';
+import * as Scenes_NewSuperMarioBrosDS from './nns_g3d/nsmbds_scenes';
+import * as Scenes_KingdomHearts from './kh/scenes';
+import * as Scenes_KingdomHeartsIIFinalMix from './kh2fm/scenes';
+import * as Scenes_Psychonauts from './psychonauts/scenes';
+import * as Scenes_DarkSouls from './DarkSouls/scenes';
+import * as Scenes_KatamariDamacy from './KatamariDamacy/scenes';
+import * as Scenes_PaperMario64 from './PaperMario64/scenes';
+import * as Scenes_Elebits from './rres/Scenes_Elebits';
+import * as Scenes_KirbysReturnToDreamLand from './rres/Scenes_KirbysReturnToDreamLand';
+import * as Scenes_Klonoa from './rres/Scenes_Klonoa';
+import * as Scenes_MarioAndSonicAtThe2012OlympicGames from './rres/Scenes_MarioAndSonicAtTheOlympicGames2012';
+import * as Scenes_MarioKartWii from './rres/Scenes_MarioKartWii';
+import * as Scenes_Okami from './rres/Scenes_Okami';
+import * as Scenes_SonicColors from './rres/Scenes_SonicColors';
+import * as Scenes_SuperSmashBrosBrawl from './rres/Scenes_SuperSmashBrosBrawl';
+import * as Scenes_Test from './Scenes_Test';
+import * as Scenes_WiiSportsResort from './rres/Scenes_WiiSportsResort';
+import * as Scenes_Zelda_SkywardSword from './rres/Scenes_Zelda_SkywardSword';
+import * as Scenes_InteractiveExamples from './InteractiveExamples/Scenes';
+import * as Scenes_Pilotwings64 from './Pilotwings64/Scenes';
+import * as Scenes_Fez from './Fez/Scenes_Fez';
+import * as Scenes_StarFoxAdventures from './StarFoxAdventures/scenes';
+import * as Scenes_SuperMarioOdyssey from './fres_nx/smo_scenes';
+import * as Scenes_GTA from './GrandTheftAuto3/scenes';
+import * as Scenes_SpongeBobBFBB from './SpongeBobBFBB/scenes'
+import * as Scenes_SuperSmashBrosMelee from './SuperSmashBrosMelee/Scenes_SuperSmashBrosMelee';
+import * as Scenes_PokemonSnap from './PokemonSnap/scenes';
+import * as Scenes_MetroidPrimeHunters from './MetroidPrimeHunters/Scenes_MetroidPrimeHunters';
+import * as Scenes_PokemonPlatinum from './nns_g3d/Scenes_PokemonPlatinum';
+import * as Scenes_PokemonSoulSilver from './nns_g3d/Scenes_PokemonSoulSilver';
+import * as Scenes_WiiUTransferTool from './rres/Scenes_WiiUTransferTool';
+import * as Scenes_GoldenEye007 from './GoldenEye007/Scenes_GoldenEye007';
+import * as Scenes_BanjoTooie from './BanjoTooie/scenes';
+import * as Scenes_SunshineWater from './InteractiveExamples/SunshineWater';
+import * as Scenes_HalfLife2 from './SourceEngine/Scenes_HalfLife2';
+import * as Scenes_TeamFortress2 from './SourceEngine/Scenes_TeamFortress2';
+import * as Scenes_Portal from './SourceEngine/Scenes_Portal';
+import * as Scenes_TheWitness from './TheWitness/Scenes_TheWitness';
 
-import ArrayBufferSlice from './ArrayBufferSlice';
-import Progressable from './Progressable';
+import { DroppedFileSceneDesc, traverseFileSystemDataTransfer } from './Scenes_FileDrops';
 
-import * as BK from './bk/scenes';
-import * as THUG2 from './thug2/scenes';
-import * as ZTP from './j3d/ztp_scenes';
-import * as MKDD from './j3d/mkdd_scenes';
-import * as ZWW from './j3d/zww_scenes';
-import * as SMS from './j3d/sms_scenes';
-import * as PIK2 from './j3d/pik2_scenes';
-import * as SMG1 from './j3d/smg1_scenes';
-import * as SMG2 from './j3d/smg2_scenes';
-import * as SM64DS from './sm64ds/scenes';
-import * as MDL0 from './mdl0/scenes';
-import * as OOT3D from './oot3d/oot3d_scenes';
-import * as MM3D from './oot3d/mm3d_scenes';
-import * as LM3D from './oot3d/lm3d_scenes';
-import * as SPL from './fres/splatoon_scenes';
-import * as DKSIV from './dksiv/scenes';
-import * as MP1 from './metroid_prime/scenes';
-import * as DKCR from './metroid_prime/dkcr_scenes';
-import * as LM from './luigis_mansion/scenes';
-import * as ZSS from './rres/zss_scenes';
-import * as ELB from './rres/elb_scenes';
-import * as MKWII from './rres/mkwii_scenes';
-import * as TTYD from './ttyd/scenes';
-import * as SPM from './ttyd/spm_scenes';
-import * as MKDS from './nns_g3d/mkds_scenes';
-import * as NSMBDS from './nns_g3d/nsmbds_scenes';
-import * as KH from './kh/scenes';
-import * as Z_BOTW from './z_botw/scenes';
-import * as SMO from './fres_nx/smo_scenes';
-import * as PSY from './psychonauts/scenes';
-import * as DKS from './dks/scenes';
-import * as RTDL from './rres/rtdl_scenes';
-import * as SONIC_COLORS from './rres/sonic_colors_scenes';
-import * as KLONOA from './rres/klonoa_scenes';
-import * as KATAMARI_DAMACY from './katamari_damacy/scenes';
-
-import { UI, SaveStatesAction } from './ui';
+import { UI, Panel } from './ui';
 import { serializeCamera, deserializeCamera, FPSCameraController } from './Camera';
-import { hexdump } from './util';
-import { downloadBlob, downloadBufferSlice, downloadBuffer } from './fetch';
-import { ZipFileEntry, makeZipFile } from './ZipFile';
-import { TextureHolder } from './TextureHolder';
+import { assertExists, assert, fallbackUndefined } from './util';
+import { DataFetcher } from './DataFetcher';
 import { atob, btoa } from './Ascii85';
-import { vec3, mat4 } from 'gl-matrix';
+import { mat4 } from 'gl-matrix';
 import { GlobalSaveManager, SaveStateLocation } from './SaveManager';
 import { RenderStatistics } from './RenderStatistics';
-import { gfxDeviceGetImpl } from './gfx/platform/GfxPlatformWebGL2';
 import { Color } from './Color';
 import { standardFullClearRenderPassDescriptor } from './gfx/helpers/RenderTargetHelpers';
-import { DroppedFileSceneDesc } from './FileDrops';
+
+import * as Sentry from '@sentry/browser';
+import { GIT_REVISION, IS_DEVELOPMENT } from './BuildVersion';
+import { SceneDesc, SceneGroup, SceneContext, getSceneDescs, Destroyable } from './SceneBase';
+import { prepareFrameDebugOverlayCanvas2D } from './DebugJunk';
+import { downloadBlob, downloadBuffer } from './DownloadUtils';
+import { DataShare } from './DataShare';
+import InputManager from './InputManager';
+import { WebXRContext } from './WebXR';
+import { debugJunk } from './DebugJunk';
 
 const sceneGroups = [
     "Wii",
-    MKWII.sceneGroup,
-    RTDL.sceneGroup,
-    KLONOA.sceneGroup,
-    SMG1.sceneGroup,
-    SMG2.sceneGroup,
-    SPM.sceneGroup,
-    ZSS.sceneGroup,
-    ELB.sceneGroup,
+    Scenes_MarioKartWii.sceneGroup,
+    Scenes_KirbysReturnToDreamLand.sceneGroup,
+    Scenes_Klonoa.sceneGroup,
+    Scenes_Zelda_SkywardSword.sceneGroup,
+    Scenes_Okami.sceneGroup,
+    Scenes_SuperMarioGalaxy1.sceneGroup,
+    Scenes_SuperMarioGalaxy2.sceneGroup,
+    Scenes_SuperPaperMario.sceneGroup,
+    Scenes_SuperSmashBrosBrawl.sceneGroup,
+    Scenes_WiiSportsResort.sceneGroup,
     "GameCube",
-    LM.sceneGroup,
-    MKDD.sceneGroup,
-    MP1.sceneGroup,
-    TTYD.sceneGroup,
-    PIK2.sceneGroup,
-    SMS.sceneGroup,
-    ZTP.sceneGroup,
-    ZWW.sceneGroup,
-    "Nintendo DS",
-    MKDS.sceneGroup,
-    SM64DS.sceneGroup,
-    NSMBDS.sceneGroup,
+    Scenes_LuigisMansion.sceneGroup,
+    Scenes_MarioKartDoubleDash.sceneGroup,
+    Scenes_MetroidPrime.sceneGroupMP1,
+    Scenes_MetroidPrime.sceneGroupMP2,
+    Scenes_PaperMario_TheThousandYearDoor.sceneGroup,
+    Scenes_Pikmin2.sceneGroup,
+    Scenes_SuperMarioSunshine.sceneGroup,
+    Scenes_Zelda_TwilightPrincess.sceneGroup,
+    Scenes_Zelda_TheWindWaker.sceneGroup,
     "Nintendo 3DS",
-    LM3D.sceneGroup,
-    MM3D.sceneGroup,
-    OOT3D.sceneGroup,
+    Scenes_Zelda_MajorasMask3D.sceneGroup,
+    Scenes_Zelda_OcarinaOfTime3D.sceneGroup,
+    "Nintendo DS",
+    Scenes_MarioKartDS.sceneGroup,
+    Scenes_NewSuperMarioBrosDS.sceneGroup,
+    Scenes_SuperMario64DS.sceneGroup,
+    "Nintendo 64",
+    Scenes_BanjoKazooie.sceneGroup,
+    Scenes_PaperMario64.sceneGroup,
+    Scenes_Pilotwings64.sceneGroup,
+    Scenes_PokemonSnap.sceneGroup,
     "PlayStation 2",
-    KATAMARI_DAMACY.sceneGroup,
-    KH.sceneGroup,
-    "Other",
-    DKSIV.sceneGroup,
-    BK.sceneGroup,
-    MDL0.sceneGroup,
+    Scenes_GTA.sceneGroup.iii,
+    Scenes_KatamariDamacy.sceneGroup,
+    Scenes_KingdomHearts.sceneGroup,
+    Scenes_KingdomHeartsIIFinalMix.sceneGroup,
+    "Xbox",
+    Scenes_SpongeBobBFBB.sceneGroup,
+    "PC",
+    Scenes_HalfLife2.sceneGroup,
+    Scenes_Portal.sceneGroup,
     "Experimental",
-    PSY.sceneGroup,
-    DKCR.sceneGroup,
-    SMO.sceneGroup,
-    SPL.sceneGroup,
-    Z_BOTW.sceneGroup,
-    DKS.sceneGroup,
-    THUG2.sceneGroup,
-    SONIC_COLORS.sceneGroup,
+    Scenes_BanjoTooie.sceneGroup,
+    Scenes_DarkSouls.sceneGroup,
+    Scenes_DarkSoulsCollision.sceneGroup,
+    Scenes_DonkeyKong64.sceneGroup,
+    Scenes_DonkeyKongCountryReturns.sceneGroup,
+    Scenes_Elebits.sceneGroup,
+    Scenes_Fez.sceneGroup,
+    Scenes_GTA.sceneGroup.vc,
+    Scenes_GTA.sceneGroup.sa,
+    Scenes_LuigisMansion3D.sceneGroup,
+    Scenes_MarioAndSonicAtThe2012OlympicGames.sceneGroup,
+    Scenes_MetroidPrime.sceneGroupMP3,
+    Scenes_MetroidPrimeHunters.sceneGroup,
+    Scenes_PokemonPlatinum.sceneGroup,
+    Scenes_PokemonSoulSilver.sceneGroup,
+    Scenes_Psychonauts.sceneGroup,
+    Scenes_SonicColors.sceneGroup,
+    Scenes_StarFoxAdventures.sceneGroup,
+    Scenes_SuperMarioOdyssey.sceneGroup,
+    Scenes_SuperSmashBrosMelee.sceneGroup,
+    Scenes_WiiUTransferTool.sceneGroup,
+    Scenes_Zelda_OcarinaOfTime.sceneGroup,
+    Scenes_GoldenEye007.sceneGroup,
+    Scenes_Test.sceneGroup,
+    Scenes_InteractiveExamples.sceneGroup,
+    Scenes_SunshineWater.sceneGroup,
+    Scenes_TeamFortress2.sceneGroup,
+    Scenes_TheWitness.sceneGroup,
 ];
 
 function blobToArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
     return new Response(blob).arrayBuffer();
 }
 
-class SceneLoader {
-    public loadingSceneDesc: SceneDesc = null;
-    public abortController: AbortController | null = null;
-
-    constructor(public viewer: Viewer) {
-    }
-
-    public loadSceneDesc(sceneDesc: SceneDesc): Progressable<SceneGfx> {
-        this.viewer.setScene(null);
-        gfxDeviceGetImpl(this.viewer.gfxDevice).checkForLeaks();
-
-        if (this.abortController !== null)
-            this.abortController.abort();
-        this.abortController = new AbortController();
-
-        this.loadingSceneDesc = sceneDesc;
-
-        if (sceneDesc.createScene !== undefined) {
-            const progressable = sceneDesc.createScene(this.viewer.gfxDevice, this.abortController.signal);
-            if (progressable !== null) {
-                progressable.then((scene: SceneGfx) => {
-                    if (this.loadingSceneDesc === sceneDesc) {
-                        this.loadingSceneDesc = null;
-                        this.viewer.setScene(scene);
-                    }
-                });
-                return progressable;
-            }
-        }
-
-        console.error(`Cannot create scene. Probably an unsupported file extension.`);
-        throw "whoops";
-    }
-}
-
 function convertCanvasToPNG(canvas: HTMLCanvasElement): Promise<Blob> {
-    return new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/png'));
+    return new Promise((resolve) => canvas.toBlob((b) => resolve(assertExists(b)), 'image/png'));
 }
 
-function writeString(d: Uint8Array, offs: number, m: string): number {
-    const n = m.length;
-    for (let i = 0; i < n; i++)
-        d[offs++] = m.charCodeAt(i);
-    return n;
+// Ideas for option bits. Not used yet.
+const enum OptionsBitsV3 {
+    HasSceneTime       = 0b00000001,
+    ScenePaused        = 0b00000010,
+    LowCameraPrecision = 0b00000100,
+};
+
+const enum SaveStatesAction {
+    Load,
+    LoadDefault,
+    Save,
+    Delete
+};
+
+class AnimationLoop implements ViewerUpdateInfo {
+    public time: number = 0;
+    public webXRContext: WebXRContext | null = null;
+
+    public onupdate: ((updateInfo: ViewerUpdateInfo) => void);
+
+    // https://hackmd.io/lvtOckAtSrmIpZAwgtXptw#Use-requestPostAnimationFrame-not-requestAnimationFrame
+    // https://github.com/WICG/requestPostAnimationFrame
+    // https://github.com/gpuweb/gpuweb/issues/596#issuecomment-596769356
+
+    // XXX(jstpierre): Disabled for now. https://bugs.chromium.org/p/chromium/issues/detail?id=1065012
+    public useRequestPostAnimationFrame = false;
+
+    private _timeoutCallback = (): void => {
+        this.onupdate(this);
+    };
+
+    // Call this from within your requestAnimationFrame handler.
+    public requestPostAnimationFrame = (): void => {
+        this.time = window.performance.now();
+        if (this.useRequestPostAnimationFrame)
+            setTimeout(this._timeoutCallback, 0);
+        else
+            this.onupdate(this);
+    };
 }
 
-function matchString(d: Uint8Array, offs: number, m: string): boolean {
-    const n = m.length;
-    for (let i = 0; i < n; i++)
-        if (d[offs++] !== m.charCodeAt(i))
-            return false;
-    return true;
-}
-
-const SAVE_STATE_MAGIC = 'NC\0\0';
 class Main {
     public toplevel: HTMLElement;
     public canvas: HTMLCanvasElement;
@@ -178,37 +217,65 @@ class Main {
     public groups: (string | SceneGroup)[];
     public ui: UI;
     public saveManager = GlobalSaveManager;
+    public paused: boolean = false;
 
     private droppedFileGroup: SceneGroup;
 
-    private uiContainers: HTMLElement;
-    private dragHighlight: HTMLElement;
-    private currentSceneGroup: SceneGroup;
-    private currentSceneDesc: SceneDesc;
+    private currentSceneGroup: SceneGroup | null = null;
+    private currentSceneDesc: SceneDesc | null = null;
 
-    private sceneLoader: SceneLoader;
+    private loadingSceneDesc: SceneDesc | null = null;
+    private destroyablePool: Destroyable[] = [];
+    private dataShare = new DataShare();
+    private dataFetcher: DataFetcher;
+    private lastUpdatedURLTimeSeconds: number = -1;
+
+    private postAnimFrameCanvas = new AnimationLoop();
+    private postAnimFrameWebXR = new AnimationLoop();
+    private webXRContext: WebXRContext;
+
+    public sceneTimeScale = 1.0;
+    public isEmbedMode = false;
+
+    // Link to debugJunk so we can reference it from the DevTools.
+    private debugJunk = debugJunk;
 
     constructor() {
+        this.init();
+    }
+
+    public async init() {
+        this.isEmbedMode = window.location.pathname === '/embed.html';
+
         this.toplevel = document.createElement('div');
         document.body.appendChild(this.toplevel);
 
         this.canvas = document.createElement('canvas');
 
-        this.uiContainers = document.createElement('div');
-        this.toplevel.appendChild(this.uiContainers);
-
-        const errorCode = initializeViewer(this, this.canvas);
+        const errorCode = await initializeViewer(this, this.canvas);
         if (errorCode !== InitErrorCode.SUCCESS) {
-            this.uiContainers.appendChild(makeErrorUI(errorCode));
+            this.toplevel.appendChild(makeErrorUI(errorCode));
             return;
         }
 
+        this.webXRContext = new WebXRContext(this.viewer.gfxSwapChain);
+        this.webXRContext.onframe = this.postAnimFrameWebXR.requestPostAnimationFrame;
+
+        this.postAnimFrameCanvas.onupdate = this._onPostAnimFrameUpdate;
+
+        // requestPostAnimationFrame breaks WebXR.
+        this.postAnimFrameWebXR.webXRContext = this.webXRContext;
+        this.postAnimFrameWebXR.useRequestPostAnimationFrame = false;
+        this.postAnimFrameWebXR.onupdate = this._onPostAnimFrameUpdate;
+
         this.toplevel.ondragover = (e) => {
-            this.dragHighlight.style.display = 'block';
+            if (!e.dataTransfer || !e.dataTransfer.types.includes('Files'))
+                return;
+            this.ui.dragHighlight.style.display = 'block';
             e.preventDefault();
         };
         this.toplevel.ondragleave = (e) => {
-            this.dragHighlight.style.display = 'none';
+            this.ui.dragHighlight.style.display = 'none';
             e.preventDefault();
         };
         this.toplevel.ondrop = this._onDrop.bind(this);
@@ -220,16 +287,17 @@ class Main {
         this.viewer.onstatistics = (statistics: RenderStatistics): void => {
             this.ui.statisticsPanel.addRenderStatistics(statistics);
         };
-        this.viewer.oncamerachanged = () => {
-            this._saveState();
+        this.viewer.oncamerachanged = (force: boolean) => {
+            this._saveState(force);
         };
-        this.viewer.inputManager.onisdraggingchanged = () => {
-            this.ui.setIsDragging(this.viewer.inputManager.isDragging());
+        this.viewer.inputManager.ondraggingmodechanged = () => {
+            this.ui.setDraggingMode(this.viewer.inputManager.getDraggingMode());
         };
-
-        this.sceneLoader = new SceneLoader(this.viewer);
 
         this._makeUI();
+
+        this.dataFetcher = new DataFetcher(this.ui.sceneSelect);
+        await this.dataFetcher.init();
 
         this.groups = sceneGroups;
 
@@ -239,16 +307,12 @@ class Main {
 
         this._loadSceneGroups();
 
-        if (this.currentSceneDesc === undefined) {
-            // Load the state from the hash, remove the extra character at the end.
-            const hash = window.location.hash;
-            if (hash.startsWith('#'))
-                this._loadState(decodeURIComponent(hash.slice(1)));
-            // Wipe out the hash from the URL.
-            window.history.replaceState('', '', '/');
-        }
+        window.onhashchange = this._onHashChange.bind(this);
 
-        if (this.currentSceneDesc === undefined) {
+        if (this.currentSceneDesc === null)
+            this._onHashChange();
+
+        if (this.currentSceneDesc === null) {
             // Load the state from session storage.
             const currentDescId = this.saveManager.getCurrentSceneDescId();
             if (currentDescId !== null) {
@@ -259,12 +323,38 @@ class Main {
             }
         }
 
-        if (this.currentSceneDesc === undefined) {
+        if (this.currentSceneDesc === null) {
             // Make the user choose a scene if there's nothing loaded by default...
             this.ui.sceneSelect.setExpanded(true);
         }
 
-        this._updateLoop(0);
+        this._onRequestAnimationFrameCanvas();
+
+        if (!IS_DEVELOPMENT) {
+            Sentry.init({
+                dsn: 'https://a3b5f6c50bc04555835f9a83d6e76b23@sentry.io/1448331',
+                beforeSend: (event) => {
+                    // Filter out aborted XHRs.
+                    if (event.exception!.values!.length) {
+                        const exc = event.exception!.values![0];
+                        if (exc.type === 'AbortedError')
+                            return null;
+                    }
+
+                    return event;
+                },
+            });
+
+            Sentry.configureScope((scope) => {
+                scope.setExtra('git-revision', GIT_REVISION);
+            });
+        }
+    }
+
+    private _onHashChange(): void {
+        const hash = window.location.hash;
+        if (hash.startsWith('#'))
+            this._loadState(decodeURIComponent(hash.slice(1)));
     }
 
     private _exportSaveData() {
@@ -273,21 +363,26 @@ class Main {
         downloadBlob(`noclip_export_${date.toISOString()}.nclsp`, new Blob([saveData]));
     }
 
+    private pickSaveStatesAction(inputManager: InputManager): SaveStatesAction {
+        if (inputManager.isKeyDown('ShiftLeft'))
+            return SaveStatesAction.Save;
+        else if (inputManager.isKeyDown('AltLeft'))
+            return SaveStatesAction.Delete;
+        else
+            return SaveStatesAction.Load;
+    }
+
     private checkKeyShortcuts() {
         const inputManager = this.viewer.inputManager;
         if (inputManager.isKeyDownEventTriggered('KeyZ'))
             this._toggleUI();
-        if (inputManager.isKeyDownEventTriggered('Numpad9'))
-            this._downloadTextures();
         if (inputManager.isKeyDownEventTriggered('KeyT'))
             this.ui.sceneSelect.expandAndFocus();
-        if (inputManager.isKeyDownEventTriggered('KeyG'))
-            this.ui.saveStatesPanel.expandAndFocus();
         for (let i = 1; i <= 9; i++) {
             if (inputManager.isKeyDownEventTriggered('Digit'+i)) {
                 if (this.currentSceneDesc) {
                     const key = this._getSaveStateSlotKey(i);
-                    const action = this.ui.saveStatesPanel.pickSaveStatesAction(inputManager);
+                    const action = this.pickSaveStatesAction(inputManager);
                     this.doSaveStatesAction(action, key);
                 }
             }
@@ -295,76 +390,112 @@ class Main {
         if (inputManager.isKeyDownEventTriggered('Numpad3'))
             this._exportSaveData();
         if (inputManager.isKeyDownEventTriggered('Period'))
-            this.viewer.isSceneTimeRunning = !this.viewer.isSceneTimeRunning;
+            this.ui.togglePlayPause();
     }
 
-    private _updateLoop = (time: number) => {
+    private async _onWebXRStateRequested(state: boolean) {
+        if (!this.webXRContext)
+            return;
+
+        if (state) {
+            try {
+                await this.webXRContext.start();
+                if (!this.webXRContext.xrSession) {
+                    return;
+                }
+                mat4.getTranslation(this.viewer.xrCameraController.offset, this.viewer.camera.worldMatrix);
+                this.webXRContext.xrSession.addEventListener('end', () => {
+                    this.ui.toggleWebXRCheckbox(false);
+                });
+            } catch(e) {
+                console.error("Failed to start XR");
+                this.ui.toggleWebXRCheckbox(false);
+            }
+        } else {
+            this.webXRContext.end();
+        }
+    }
+
+    public setPaused(v: boolean): void {
+        this.paused = v;
+    }
+
+    private _onPostAnimFrameUpdate = (updateInfo: ViewerUpdateInfo): void => {
         this.checkKeyShortcuts();
 
-        // Needs to be called before this.viewer.update
-        const shouldTakeScreenshot = this.viewer.inputManager.isKeyDownEventTriggered('Numpad7');
+        prepareFrameDebugOverlayCanvas2D();
 
-        this.viewer.update(time);
+        // Needs to be called before this.viewer.update()
+        const shouldTakeScreenshot = this.viewer.inputManager.isKeyDownEventTriggered('Numpad7') || this.viewer.inputManager.isKeyDownEventTriggered('BracketRight');
+
+        this.viewer.sceneTimeScale = this.ui.isPlaying ? this.sceneTimeScale : 0.0;
+
+        this.viewer.update(updateInfo);
 
         if (shouldTakeScreenshot)
             this._takeScreenshot();
 
-        window.requestAnimationFrame(this._updateLoop);
+        this.ui.update();
     };
 
-    private _onDrop(e: DragEvent) {
-        this.dragHighlight.style.display = 'none';
+    private _onRequestAnimationFrameCanvas = (): void => {
+        if (this.webXRContext.xrSession !== null) {
+            // Currently presenting to XR. Skip the canvas render.
+        } else {
+            this.postAnimFrameCanvas.requestPostAnimationFrame();
+        }
+
+        window.requestAnimationFrame(this._onRequestAnimationFrameCanvas);
+    };
+
+    private async _onDrop(e: DragEvent) {
+        this.ui.dragHighlight.style.display = 'none';
+
+        if (!e.dataTransfer || e.dataTransfer.files.length === 0)
+            return;
+
         e.preventDefault();
         const transfer = e.dataTransfer;
-        if (transfer.files.length === 0)
-            return;
-        const file = transfer.files[0];
-        const files: File[] = [];
-        for (let i = 0; i < transfer.files.length; i++)
-            files.push(transfer.files[i]);
-        const sceneDesc = new DroppedFileSceneDesc(file, files);
+        const files = await traverseFileSystemDataTransfer(transfer);
+        const sceneDesc = new DroppedFileSceneDesc(files);
         this.droppedFileGroup.sceneDescs.push(sceneDesc);
         this._loadSceneGroups();
         this._loadSceneDesc(this.droppedFileGroup, sceneDesc);
     }
 
     private _onResize() {
-        const devicePixelRatio = window.devicePixelRatio || 1;
-        this.canvas.setAttribute('style', `width: ${window.innerWidth}px; height: ${window.innerHeight}px;`);
-        this.canvas.width = window.innerWidth * devicePixelRatio;
-        this.canvas.height = window.innerHeight * devicePixelRatio;
+        resizeCanvas(this.canvas, window.innerWidth, window.innerHeight, window.devicePixelRatio);
     }
 
     private _saveStateTmp = new Uint8Array(512);
-    private _saveStateF32 = new Float32Array(this._saveStateTmp.buffer);
+    private _saveStateView = new DataView(this._saveStateTmp.buffer);
+    // TODO(jstpierre): Save this in main instead of having this called 8 bajillion times...
     private _getSceneSaveState() {
-        writeString(this._saveStateTmp, 0, SAVE_STATE_MAGIC);
+        let byteOffs = 0;
 
-        let wordOffs = 1;
-        this._saveStateF32[wordOffs++] = this.viewer.sceneTime;
-        wordOffs += serializeCamera(this._saveStateF32, wordOffs, this.viewer.camera);
-        let offs = wordOffs * 4;
+        const optionsBits: OptionsBitsV3 = 0;
+        this._saveStateView.setUint8(byteOffs, optionsBits);
+        byteOffs++;
+
+        byteOffs += serializeCamera(this._saveStateView, byteOffs, this.viewer.camera);
+
+        // TODO(jstpierre): Pass DataView into serializeSaveState
         if (this.viewer.scene !== null && this.viewer.scene.serializeSaveState)
-            offs = this.viewer.scene.serializeSaveState(this._saveStateTmp.buffer, offs);
+            byteOffs = this.viewer.scene.serializeSaveState(this._saveStateTmp.buffer, byteOffs);
 
-        const s = atob(this._saveStateTmp, offs);
-        return s + '=';
+        const s = btoa(this._saveStateTmp, byteOffs);
+        return `ShareData=${s}`;
     }
 
     private _loadSceneSaveStateVersion2(state: string): boolean {
-        const byteLength = btoa(this._saveStateTmp, 0, state);
-        if (byteLength < 4)
-            return false;
+        const byteLength = atob(this._saveStateTmp, 0, state);
 
-        if (!matchString(this._saveStateTmp, 0, SAVE_STATE_MAGIC))
-            return false;
-
-        let wordOffs = 1;
-        this.viewer.sceneTime = this._saveStateF32[wordOffs++];
-        wordOffs += deserializeCamera(this.viewer.camera, this._saveStateF32, wordOffs);
-        let offs = wordOffs * 4;
+        let byteOffs = 0;
+        this.viewer.sceneTime = this._saveStateView.getFloat32(byteOffs + 0x00, true);
+        byteOffs += 0x04;
+        byteOffs += deserializeCamera(this.viewer.camera, this._saveStateView, byteOffs);
         if (this.viewer.scene !== null && this.viewer.scene.deserializeSaveState)
-            offs = this.viewer.scene.deserializeSaveState(this._saveStateTmp.buffer, offs, byteLength);
+            byteOffs = this.viewer.scene.deserializeSaveState(this._saveStateTmp.buffer, byteOffs, byteLength);
 
         if (this.viewer.cameraController !== null)
             this.viewer.cameraController.cameraUpdateForced();
@@ -372,56 +503,68 @@ class Main {
         return true;
     }
 
-    private _loadSceneSaveStateVersion1(state: string): boolean {
-        const camera = this.viewer.camera;
+    private _loadSceneSaveStateVersion3(state: string): boolean {
+        const byteLength = atob(this._saveStateTmp, 0, state);
 
-        const [tx, ty, tz, fx, fy, fz, rx, ry, rz] = state.split(',');
-        // Translation.
-        camera.worldMatrix[12] = +tx;
-        camera.worldMatrix[13] = +ty;
-        camera.worldMatrix[14] = +tz;
-        camera.worldMatrix[2] = +fx;
-        camera.worldMatrix[6] = +fy;
-        camera.worldMatrix[10] = +fz;
-        camera.worldMatrix[0] = +rx;
-        camera.worldMatrix[4] = +ry;
-        camera.worldMatrix[8] = +rz;
-        const u = vec3.create();
-        vec3.cross(u, [camera.worldMatrix[2], camera.worldMatrix[6], camera.worldMatrix[10]], [camera.worldMatrix[0], camera.worldMatrix[4], camera.worldMatrix[8]]);
-        vec3.normalize(u, u);
-        camera.worldMatrix[1] = u[0];
-        camera.worldMatrix[5] = u[1];
-        camera.worldMatrix[9] = u[2];
+        let byteOffs = 0;
+        const optionsBits: OptionsBitsV3 = this._saveStateView.getUint8(byteOffs + 0x00);
+        assert(optionsBits === 0);
+        byteOffs++;
+
+        byteOffs += deserializeCamera(this.viewer.camera, this._saveStateView, byteOffs);
+        if (this.viewer.scene !== null && this.viewer.scene.deserializeSaveState)
+            byteOffs = this.viewer.scene.deserializeSaveState(this._saveStateTmp.buffer, byteOffs, byteLength);
 
         if (this.viewer.cameraController !== null)
             this.viewer.cameraController.cameraUpdateForced();
 
         return true;
+    }
+
+    private _tryLoadSceneSaveState(state: string): boolean {
+        // Version 2 starts with ZNCA8, which is Ascii85 for 'NC\0\0'
+        if (state.startsWith('ZNCA8') && state.endsWith('='))
+            return this._loadSceneSaveStateVersion2(state.slice(5, -1));
+
+        // Version 3 starts with 'A' and has no '=' at the end.
+        if (state.startsWith('A'))
+            return this._loadSceneSaveStateVersion3(state.slice(1));
+
+        if (state.startsWith('ShareData='))
+            return this._loadSceneSaveStateVersion3(state.slice(10));
+
+        return false;
     }
 
     private _loadSceneSaveState(state: string | null): boolean {
         if (state === '' || state === null)
             return false;
 
-        if (state.endsWith('='))
-            return this._loadSceneSaveStateVersion2(state.slice(0, -1));
-        else
-            return this._loadSceneSaveStateVersion1(state);
+        if (this._tryLoadSceneSaveState(state)) {
+            // Force an update of the URL whenever we successfully load state...
+            this._saveStateAndUpdateURL();
+            return true;
+        } else {
+            return false;
+        }
     }
 
-    private _loadSceneDescById(id: string, sceneState: string | null): Progressable<SceneGfx> | null {
+    private _loadSceneDescById(id: string, sceneState: string | null): void {
         const [groupId, ...sceneRest] = id.split('/');
         let sceneId = decodeURIComponent(sceneRest.join('/'));
 
         const group = this.groups.find((g) => typeof g !== 'string' && g.id === groupId) as SceneGroup;
         if (!group)
-            return null;
+            return;
 
         if (group.sceneIdMap !== undefined && group.sceneIdMap.has(sceneId))
-            sceneId = group.sceneIdMap.get(sceneId);
+            sceneId = group.sceneIdMap.get(sceneId)!;
 
         const desc = getSceneDescs(group).find((d) => d.id === sceneId);
-        return this._loadSceneDesc(group, desc, sceneState);
+        if (!desc)
+            return;
+
+        this._loadSceneDesc(group, desc, sceneState);
     }
 
     private _loadState(state: string) {
@@ -438,48 +581,72 @@ class Main {
     }
 
     private _getCurrentSceneDescId() {
+        if (this.currentSceneGroup === null || this.currentSceneDesc === null)
+            return null;
+
         const groupId = this.currentSceneGroup.id;
         const sceneId = this.currentSceneDesc.id;
         return `${groupId}/${sceneId}`;
     }
 
-    private _saveState() {
-        if (this.currentSceneDesc === null)
+    private _saveState(forceUpdateURL: boolean = false) {
+        if (this.currentSceneGroup === null || this.currentSceneDesc === null)
             return;
 
         const sceneStateStr = this._getSceneSaveState();
-        const currentDescId = this._getCurrentSceneDescId();
+        const currentDescId = this._getCurrentSceneDescId()!;
         const key = this.saveManager.getSaveStateSlotKey(currentDescId, 0);
         this.saveManager.saveTemporaryState(key, sceneStateStr);
 
         const saveState = `${currentDescId};${sceneStateStr}`;
-        this.ui.saveStatesPanel.setSaveState(saveState);
+        this.ui.setSaveState(saveState);
+
+        let shouldUpdateURL = forceUpdateURL;
+        if (!shouldUpdateURL) {
+            const timeSeconds = window.performance.now() / 1000;
+            const secondsElapsedSinceLastUpdatedURL = timeSeconds - this.lastUpdatedURLTimeSeconds;
+
+            if (secondsElapsedSinceLastUpdatedURL >= 2)
+                shouldUpdateURL = true;
+        }
+
+        if (shouldUpdateURL) {
+            window.history.replaceState('', document.title, `#${saveState}`);
+
+            const timeSeconds = window.performance.now() / 1000;
+            this.lastUpdatedURLTimeSeconds = timeSeconds;
+        }
+    }
+
+    private _saveStateAndUpdateURL(): void {
+        this._saveState(true);
     }
 
     private _getSaveStateSlotKey(slotIndex: number): string {
-        return this.saveManager.getSaveStateSlotKey(this._getCurrentSceneDescId(), slotIndex);
+        return this.saveManager.getSaveStateSlotKey(assertExists(this._getCurrentSceneDescId()), slotIndex);
     }
 
-    private _onSceneChanged(scene: SceneGfx, sceneStateStr: string): void {
+    private _onSceneChanged(scene: SceneGfx, sceneStateStr: string | null): void {
         scene.onstatechanged = () => {
-            this._saveState();
+            this._saveStateAndUpdateURL();
         };
 
-        if (scene.createPanels !== undefined)
-            this.ui.setScenePanels(scene.createPanels());
-        else
-            this.ui.setScenePanels([]);
+        let scenePanels: Panel[] = [];
+        if (scene.createPanels)
+            scenePanels = scene.createPanels();
+        this.ui.setScenePanels(scenePanels);
+        // Force time to play when loading a map.
+        this.ui.togglePlayPause(true);
 
-        const sceneDescId = this._getCurrentSceneDescId();
+        const isInteractive = fallbackUndefined<boolean>(scene.isInteractive, true);
+        this.viewer.inputManager.isInteractive = isInteractive;
+
+        const sceneDescId = this._getCurrentSceneDescId()!;
         this.saveManager.setCurrentSceneDescId(sceneDescId);
-        this.ui.saveStatesPanel.setCurrentSceneDescId(sceneDescId);
+        this._saveStateAndUpdateURL();
 
-        // Set camera controller.
-        if (scene.defaultCameraController !== undefined) {
-            const controller = new scene.defaultCameraController();
-            this.viewer.setCameraController(controller);
-        }
-
+        if (scene.createCameraController !== undefined)
+            this.viewer.setCameraController(scene.createCameraController());
         if (this.viewer.cameraController === null)
             this.viewer.setCameraController(new FPSCameraController());
 
@@ -488,9 +655,11 @@ class Main {
 
             const key = this.saveManager.getSaveStateSlotKey(sceneDescId, 1);
             const didLoadCameraState = this._loadSceneSaveState(this.saveManager.loadState(key));
-    
+
             if (!didLoadCameraState)
                 mat4.identity(camera.worldMatrix);
+
+            mat4.getTranslation(this.viewer.xrCameraController.offset, camera.worldMatrix);
         }
 
         this.ui.sceneChanged();
@@ -514,40 +683,96 @@ class Main {
         }
     }
 
-    private _sendAnalytics(): void {
-        const groupId = this.currentSceneGroup.id;
-        const sceneId = this.currentSceneDesc.id;
+    private loadSceneDelta = 1;
 
-        if (typeof gtag !== 'undefined') {
-            gtag("event", "loadScene", {
-                'event_category': "Scenes",
-                'event_label': `${groupId}/${sceneId}`,
-            });
+    private _loadSceneDesc(sceneGroup: SceneGroup, sceneDesc: SceneDesc, sceneStateStr: string | null = null): void {
+        if (this.currentSceneDesc === sceneDesc) {
+            this._loadSceneSaveState(sceneStateStr);
+            return;
         }
-    }
 
-    private _loadSceneDesc(sceneGroup: SceneGroup, sceneDesc: SceneDesc, sceneStateStr: string | null = null): Progressable<SceneGfx> {
-        if (this.currentSceneDesc === sceneDesc)
-            return Progressable.resolve(null);
+        const device = this.viewer.gfxDevice;
+
+        // Tear down old scene.
+        if (this.dataFetcher !== null)
+            this.dataFetcher.abort();
+        this.ui.destroyScene();
+        if (this.viewer.scene && !this.destroyablePool.includes(this.viewer.scene))
+            this.destroyablePool.push(this.viewer.scene);
+        this.viewer.setScene(null);
+        for (let i = 0; i < this.destroyablePool.length; i++)
+            this.destroyablePool[i].destroy(device);
+        this.destroyablePool.length = 0;
+
+        // Unhide any hidden scene groups upon being loaded.
+        if (sceneGroup.hidden)
+            sceneGroup.hidden = false;
 
         this.currentSceneGroup = sceneGroup;
         this.currentSceneDesc = sceneDesc;
         this.ui.sceneSelect.setCurrentDesc(this.currentSceneGroup, this.currentSceneDesc);
 
-        const progressable = this.sceneLoader.loadSceneDesc(sceneDesc).then((scene) => {
-            this._onSceneChanged(scene, sceneStateStr);
-            return scene;
-        });
-        this.ui.sceneSelect.setLoadProgress(progressable.progress);
-        progressable.onProgress = () => {
-            this.ui.sceneSelect.setLoadProgress(progressable.progress);
+        this.ui.sceneSelect.setProgress(0);
+
+        const dataShare = this.dataShare;
+        const dataFetcher = this.dataFetcher;
+        dataFetcher.reset();
+        const uiContainer: HTMLElement = document.createElement('div');
+        this.ui.sceneUIContainer.appendChild(uiContainer);
+        const destroyablePool: Destroyable[] = this.destroyablePool;
+        const inputManager = this.viewer.inputManager;
+        const context: SceneContext = {
+            device, dataFetcher, dataShare, uiContainer, destroyablePool, inputManager,
         };
+
+        // The age delta on pruneOldObjects determines whether any resources will be shared at all.
+        // delta = 0 means that we destroy the set of resources used by the previous scene, before
+        // we increment the age below fore the "new" scene, which is the only proper way to do leak
+        // checking. Typically, we allow one old scene's worth of contents.
+        this.dataShare.pruneOldObjects(device, this.loadSceneDelta);
+
+        if (this.loadSceneDelta === 0)
+            this.viewer.gfxDevice.checkForLeaks();
+
+        this.dataShare.loadNewScene();
+
+        this.loadingSceneDesc = sceneDesc;
+        const promise = sceneDesc.createScene(device, context);
+
+        if (promise === null) {
+            console.error(`Cannot load ${sceneDesc.id}. Probably an unsupported file extension.`);
+            throw "whoops";
+        }
+
+        promise.then((scene: SceneGfx) => {
+            if (this.loadingSceneDesc === sceneDesc) {
+                dataFetcher.setProgress();
+                this.loadingSceneDesc = null;
+                this.viewer.setScene(scene);
+                this._onSceneChanged(scene, sceneStateStr);
+            }
+        });
 
         // Set window title.
         document.title = `${sceneDesc.name} - ${sceneGroup.name} - noclip`;
 
-        this._sendAnalytics();
-        return progressable;
+        const sceneDescId = this._getCurrentSceneDescId()!;
+
+        if (typeof gtag !== 'undefined') {
+            gtag("event", "loadScene", {
+                'event_category': "Scenes",
+                'event_label': sceneDescId,
+            });
+        }
+
+        Sentry.addBreadcrumb({
+            category: 'loadScene',
+            message: sceneDescId,
+        });
+
+        Sentry.configureScope((scope) => {
+            scope.setExtra('sceneDescId', sceneDescId);
+        });
     }
 
     private _loadSceneGroups() {
@@ -556,72 +781,45 @@ class Main {
 
     private _makeUI() {
         this.ui = new UI(this.viewer);
-        this.uiContainers.appendChild(this.ui.elem);
+        this.ui.setEmbedMode(this.isEmbedMode);
+        this.toplevel.appendChild(this.ui.elem);
         this.ui.sceneSelect.onscenedescselected = this._onSceneDescSelected.bind(this);
-        this.ui.saveStatesPanel.onsavestatesaction = (action: SaveStatesAction, key: string) => {
-            this.doSaveStatesAction(action, key);
-        };
+        this.ui.xrSettings.onWebXRStateRequested = this._onWebXRStateRequested.bind(this);
 
-        this.dragHighlight = document.createElement('div');
-        this.uiContainers.appendChild(this.dragHighlight);
-        this.dragHighlight.style.position = 'absolute';
-        this.dragHighlight.style.left = '0';
-        this.dragHighlight.style.right = '0';
-        this.dragHighlight.style.top = '0';
-        this.dragHighlight.style.bottom = '0';
-        this.dragHighlight.style.backgroundColor = 'rgba(255, 255, 255, 0.5)';
-        this.dragHighlight.style.boxShadow = '0 0 40px 5px white inset';
-        this.dragHighlight.style.display = 'none';
-        this.dragHighlight.style.pointerEvents = 'none';
+        this.webXRContext.onsupportedchanged = () => {
+            this._syncWebXRSettingsVisible();
+        };
+        this._syncWebXRSettingsVisible();
     }
 
-    private _toggleUI() {
-        this.uiContainers.style.display = this.uiContainers.style.display === 'none' ? '' : 'none';
+    private _syncWebXRSettingsVisible(): void {
+        this.ui.xrSettings.setVisible(this.webXRContext.isSupported);
+    }
+
+    private _toggleUI(visible?: boolean) {
+        this.ui.toggleUI(visible);
     }
 
     private _getSceneDownloadPrefix() {
-        const groupId = this.currentSceneGroup.id;
-        const sceneId = this.currentSceneDesc.id;
+        const groupId = this.currentSceneGroup!.id;
+        const sceneId = this.currentSceneDesc!.id;
         const date = new Date();
         return `${groupId}_${sceneId}_${date.toISOString()}`;
     }
 
-    private _takeScreenshot() {
-        const canvas = this.viewer.takeScreenshotToCanvas();
+    private _takeScreenshot(opaque: boolean = true) {
+        const canvas = this.viewer.takeScreenshotToCanvas(opaque);
         const filename = `${this._getSceneDownloadPrefix()}.png`;
         convertCanvasToPNG(canvas).then((blob) => downloadBlob(filename, blob));
-    }
-
-    private _makeZipFileFromTextureHolder(textureHolder: TextureHolder<any>): Promise<ZipFileEntry[]> {
-        const zipFileEntries: ZipFileEntry[] = [];
-        const promises: Promise<void>[] = [];
-        for (let i = 0; i < textureHolder.viewerTextures.length; i++) {
-            const tex = textureHolder.viewerTextures[i];
-            for (let j = 0; j < tex.surfaces.length; j++) {
-                const filename = `${tex.name}_${j}.png`;
-                promises.push(convertCanvasToPNG(tex.surfaces[j]).then((blob) => blobToArrayBuffer(blob)).then((data) => {
-                    zipFileEntries.push({ filename, data });
-                }));
-            }
-        }
-
-        return Promise.all(promises).then(() => zipFileEntries);
-    }
-
-    private _downloadTextures() {
-        const textureHolder = this.viewer.getCurrentTextureHolder();
-        if (textureHolder) {
-            this._makeZipFileFromTextureHolder(textureHolder).then((zipFileEntries) => {
-                const zipBuffer = makeZipFile(zipFileEntries);
-                const filename = `${this._getSceneDownloadPrefix()}_Textures.zip`;
-                downloadBufferSlice(filename, new ArrayBufferSlice(zipBuffer), 'application/zip');
-            });
-        }
     }
 
     // Hooks for people who want to mess with stuff.
     public getStandardClearColor(): Color {
         return standardFullClearRenderPassDescriptor.colorClearColor;
+    }
+
+    public get scene() {
+        return this.viewer.scene;
     }
 }
 
@@ -631,7 +829,7 @@ declare var gtag: (command: string, eventName: string, eventParameters: { [key: 
 // Declare a "main" object for easy access.
 declare global {
     interface Window {
-        main: any;
+        main: Main;
     }
 }
 
@@ -640,10 +838,8 @@ window.main = new Main();
 // Debug utilities.
 declare global {
     interface Window {
-        hexdump: any;
-        downloadBuffer: any;
         debug: any;
+        debugObj: any;
+        gl: any;
     }
 }
-window.hexdump = hexdump;
-window.downloadBuffer = downloadBuffer;

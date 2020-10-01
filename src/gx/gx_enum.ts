@@ -53,7 +53,7 @@ export const enum Command {
     LOAD_XF_REG         = 0x10,
 }
 
-export const enum VertexAttribute {
+export const enum Attr {
     PNMTXIDX = 0,
     TEX0MTXIDX = 1,
     TEX1MTXIDX = 2,
@@ -76,7 +76,6 @@ export const enum VertexAttribute {
     TEX6 = 19,
     TEX7 = 20,
     MAX = TEX7,
-    // NBT is an "API convenience" and practically shouldn't exist...
     NBT = 25,
     NULL = 0xFF,
 }
@@ -185,6 +184,8 @@ export const enum TevOp {
     COMP_BGR24_EQ = 13,
     COMP_RGB8_GT = 14,
     COMP_RGB8_EQ = 15,
+    COMP_A8_GT = COMP_RGB8_GT,
+    COMP_A8_EQ = COMP_RGB8_EQ,
 }
 
 export const enum TevBias {
@@ -209,7 +210,7 @@ export const enum TevScale {
     $HWB_RGB8 = 3,
 }
 
-export const enum CombineColorInput {
+export const enum CC {
     CPREV = 0, /*!< Use the color value from previous TEV stage */
     APREV = 1, /*!< Use the alpha value from previous TEV stage */
     C0 = 2, /*!< Use the color value from the color/output register 0 */
@@ -228,7 +229,7 @@ export const enum CombineColorInput {
     ZERO = 15, /*!< Use to pass zero value */
 }
 
-export const enum CombineAlphaInput {
+export const enum CA {
     APREV = 0, /*!< Use the alpha value from previous TEV stage */
     A0 = 1, /*!< Use the alpha value from the color/output register 0 */
     A1 = 2, /*!< Use the alpha value from the color/output register 1 */
@@ -240,18 +241,18 @@ export const enum CombineAlphaInput {
 }
 
 export const enum KonstColorSel {
-    KCSEL_1 = 0x00, /*!< constant 1.0 */
+    KCSEL_1   = 0x00, /*!< constant 1.0 */
     KCSEL_7_8 = 0x01, /*!< constant 7/8 */
-    KCSEL_3_4 = 0x02, /*!< constant 3/4 */
+    KCSEL_6_8 = 0x02, /*!< constant 6/8 */
     KCSEL_5_8 = 0x03, /*!< constant 5/8 */
-    KCSEL_1_2 = 0x04, /*!< constant 1/2 */
+    KCSEL_4_8 = 0x04, /*!< constant 4/8 */
     KCSEL_3_8 = 0x05, /*!< constant 3/8 */
-    KCSEL_1_4 = 0x06, /*!< constant 1/4 */
+    KCSEL_2_8 = 0x06, /*!< constant 2/8 */
     KCSEL_1_8 = 0x07, /*!< constant 1/8 */
-    KCSEL_K0 = 0x0C, /*!< K0[RGB] register */
-    KCSEL_K1 = 0x0D, /*!< K1[RGB] register */
-    KCSEL_K2 = 0x0E, /*!< K2[RGB] register */
-    KCSEL_K3 = 0x0F, /*!< K3[RGB] register */
+    KCSEL_K0  = 0x0C, /*!< K0[RGB] register */
+    KCSEL_K1  = 0x0D, /*!< K1[RGB] register */
+    KCSEL_K2  = 0x0E, /*!< K2[RGB] register */
+    KCSEL_K3  = 0x0F, /*!< K3[RGB] register */
     KCSEL_K0_R = 0x10, /*!< K0[RRR] register */
     KCSEL_K1_R = 0x11, /*!< K1[RRR] register */
     KCSEL_K2_R = 0x12, /*!< K2[RRR] register */
@@ -271,14 +272,14 @@ export const enum KonstColorSel {
 }
 
 export const enum KonstAlphaSel {
-    KASEL_1 = 0x00, /*!< constant 1.0 */
-    KASEL_7_8 = 0x01, /*!< constant 7/8 */
-    KASEL_3_4 = 0x02, /*!< constant 3/4 */
-    KASEL_5_8 = 0x03, /*!< constant 5/8 */
-    KASEL_1_2 = 0x04, /*!< constant 1/2 */
-    KASEL_3_8 = 0x05, /*!< constant 3/8 */
-    KASEL_1_4 = 0x06, /*!< constant 1/4 */
-    KASEL_1_8 = 0x07, /*!< constant 1/8 */
+    KASEL_1    = 0x00, /*!< constant 1.0 */
+    KASEL_7_8  = 0x01, /*!< constant 7/8 */
+    KASEL_6_8  = 0x02, /*!< constant 6/8 */
+    KASEL_5_8  = 0x03, /*!< constant 5/8 */
+    KASEL_4_8  = 0x04, /*!< constant 4/8 */
+    KASEL_3_8  = 0x05, /*!< constant 3/8 */
+    KASEL_2_8  = 0x06, /*!< constant 2/8 */
+    KASEL_1_8  = 0x07, /*!< constant 1/8 */
     KASEL_K0_R = 0x10, /*!< K0[R] register */
     KASEL_K1_R = 0x11, /*!< K1[R] register */
     KASEL_K2_R = 0x12, /*!< K2[R] register */
@@ -432,10 +433,10 @@ export const enum TexCoordID {
     TEXCOORD5 = 5,
     TEXCOORD6 = 6,
     TEXCOORD7 = 7,
-    NULL = 0xFF,
+    TEXCOORD_NULL = 0xFF,
 }
 
-export const enum ColorChannelId {
+export const enum ColorChannelID {
     COLOR0 = 0,
     COLOR1 = 1,
     ALPHA0 = 2,
@@ -509,6 +510,13 @@ export const enum IndTexBiasSel {
     STU = 7,
 }
 
+export const enum IndTexAlphaSel {
+    OFF = 0,
+    S = 1,
+    T = 2,
+    U = 3,
+}
+
 export const enum IndTexFormat {
     _8 = 0, // 8-bit texture offset
     _5 = 1, // 5-bit texture offset
@@ -546,15 +554,39 @@ export const enum IndTexMtxID {
     T2 = 11,
 }
 
-export const enum XFRegister {
+export enum XFRegister {
     XF_INVTXSPEC_ID    = 0x1008,
     XF_NUMCOLORS_ID    = 0x1009,
+    XF_AMBIENT0_ID     = 0x100A,
+    XF_AMBIENT1_ID     = 0x100B,
+    XF_MATERIAL0_ID    = 0x100C,
+    XF_MATERIAL1_ID    = 0x100D,
+    XF_COLOR0CNTRL_ID  = 0x100E,
+    XF_COLOR1CNTRL_ID  = 0x100F,
+    XF_ALPHA0CNTRL_ID  = 0x1010,
+    XF_ALPHA1CNTRL_ID  = 0x1011,
+    XF_DUALTEXTRANS_ID = 0x1012,
+    XF_MATRIXINDEX0_ID = 0x1018,
+    XF_MATRIXINDEX1_ID = 0x1019,
+    XF_VPSCALEX_ID     = 0x101A,
+    XF_VPSCALEY_ID     = 0x101B,
+    XF_VPSCALEZ_ID     = 0x101C,
+    XF_VPOFFSETX_ID    = 0x101D,
+    XF_VPOFFSETY_ID    = 0x101E,
+    XF_VPOFFSETZ_ID    = 0x101F,
+    XF_PROJECTIONA_ID  = 0x1020,
+    XF_PROJECTIONB_ID  = 0x1021,
+    XF_PROJECTIONC_ID  = 0x1022,
+    XF_PROJECTIOND_ID  = 0x1023,
+    XF_PROJECTIONE_ID  = 0x1024,
+    XF_PROJECTIONF_ID  = 0x1025,
+    XF_PROJECTORTHO_ID = 0x1026,
     XF_NUMTEX_ID       = 0x103F,
     XF_TEX0_ID         = 0x1040,
     XF_DUALTEX0_ID     = 0x1050,
 }
 
-export const enum BPRegister {
+export enum BPRegister {
     // GEN (Graphics ENgine)
     GEN_MODE_ID        = 0x00,
 
@@ -573,6 +605,25 @@ export const enum BPRegister {
     // SetTevOrder
     RAS1_TREF_0_ID     = 0x28,
 
+    // Tex offsets
+    SU_SSIZE_I0_ID = 0x30,
+    SU_SSIZE_I1_ID = 0x32,
+    SU_SSIZE_I2_ID = 0x34,
+    SU_SSIZE_I3_ID = 0x36,
+    SU_SSIZE_I4_ID = 0x38,
+    SU_SSIZE_I5_ID = 0x3a,
+    SU_SSIZE_I6_ID = 0x3c,
+    SU_SSIZE_I7_ID = 0x3e,
+
+    SU_TSIZE_I0_ID = 0x31,
+    SU_TSIZE_I1_ID = 0x33,
+    SU_TSIZE_I2_ID = 0x35,
+    SU_TSIZE_I3_ID = 0x37,
+    SU_TSIZE_I4_ID = 0x39,
+    SU_TSIZE_I5_ID = 0x3b,
+    SU_TSIZE_I6_ID = 0x3d,
+    SU_TSIZE_I7_ID = 0x3f,
+
     // PE (ROP / Pixel Engine)
     // SetZMode
     PE_ZMODE_ID        = 0x40,
@@ -580,18 +631,21 @@ export const enum BPRegister {
     PE_CMODE0_ID       = 0x41,
 
     // TX (Texture Unit)
+    TX_LOADTLUT_I0_ID = 0x64,
     TX_SETMODE0_I0_ID  = 0x80,
     TX_SETMODE0_I4_ID  = 0xA0,
     TX_SETMODE1_I0_ID  = 0x84,
     TX_SETMODE1_I4_ID  = 0xA4,
     TX_SETIMAGE0_I0_ID = 0x88,
-    TX_SETIMAGE0_I4_ID = 0xA4,
+    TX_SETIMAGE0_I4_ID = 0xA8,
     TX_SETIMAGE1_I0_ID = 0x8C,
     TX_SETIMAGE1_I4_ID = 0xAC,
     TX_SETIMAGE2_I0_ID = 0x90,
     TX_SETIMAGE2_I4_ID = 0xB0,
-    TX_SETIMAGE3_I0_ID = 0x98,
-    TX_SETIMAGE3_I4_ID = 0xB8,
+    TX_SETIMAGE3_I0_ID = 0x94,
+    TX_SETIMAGE3_I4_ID = 0xB4,
+    TX_SETTLUT_I0_ID = 0x98,
+    TX_SETTLUT_I4_ID = 0xB8,
 
     // TEV (Texture EnVironments)
     // SetTev
@@ -617,7 +671,7 @@ export const enum BPRegister {
     SS_MASK            = 0xFE,
 }
 
-export const enum CPRegister {
+export enum CPRegister {
     MATINDEX_A_ID = 0x30,
     MATINDEX_B_ID = 0x40,
     VCD_LO_ID     = 0x50,
@@ -637,4 +691,42 @@ export const enum AttenuationFunction {
     SPEC = 0x00, // Specular attenuation
     SPOT = 0x01, // Distance/spotlight attenuation
     NONE,
+}
+
+export const enum DistAttnFunction {
+    OFF = 0x00,
+    GENTLE,
+    MEDIUM,
+    STEEP,
+}
+
+export const enum SpotFunction {
+    OFF = 0x00,
+    FLAT,
+    COS,
+    COS2,
+    SHARP,
+    RING1,
+    RING2,
+}
+
+export const enum ProjectionType {
+    PERSPECTIVE = 0x00,
+    ORTHOGRAPHIC,
+}
+
+export const enum FogType {
+    NONE          = 0x00,
+
+    PERSP_LIN     = 0x02,
+    PERSP_EXP     = 0x04,
+    PERSP_EXP2    = 0x05,
+    PERSP_REVEXP  = 0x06,
+    PERSP_REVEXP2 = 0x07,
+
+    ORTHO_LIN     = 0x0A,
+    ORTHO_EXP     = 0x0C,
+    ORTHO_EXP2    = 0x0D,
+    ORTHO_REVEXP  = 0x0E,
+    ORTHO_REVEXP2 = 0x0F,
 }

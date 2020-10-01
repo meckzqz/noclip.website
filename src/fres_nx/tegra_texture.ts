@@ -3,8 +3,9 @@ import ArrayBufferSlice from "../ArrayBufferSlice";
 import { ImageFormat, ChannelFormat, TypeFormat, getChannelFormat, getTypeFormat } from "./nngfx_enum";
 import { BRTI } from "./bntx";
 import { GfxFormat } from "../gfx/platform/GfxPlatform";
-import { decompressBC, DecodedSurfaceSW, DecodedSurfaceBC } from "../fres/bc_texture";
+import { decompressBC, DecodedSurfaceSW, DecodedSurfaceBC } from "../Common/bc_texture";
 import { assert } from "../util";
+import { clamp } from "../MathHelpers";
 
 export function getFormatBlockWidth(channelFormat: ChannelFormat): number {
     switch (channelFormat) {
@@ -74,6 +75,21 @@ export function getFormatBlockHeight(channelFormat: ChannelFormat): number {
     }
 }
 
+export function isChannelFormatSupported(channelFormat: ChannelFormat): boolean {
+    switch (channelFormat) {
+    case ChannelFormat.Bc1:
+    case ChannelFormat.Bc4:
+    case ChannelFormat.Bc2:
+    case ChannelFormat.Bc3:
+    case ChannelFormat.Bc5:
+    case ChannelFormat.R8_G8_B8_A8:
+    case ChannelFormat.B8_G8_R8_A8:
+        return true;
+    default:
+        return false;
+    }
+}
+
 export function getFormatBytesPerPixel(channelFormat: ChannelFormat): number {
     switch (channelFormat) {
     case ChannelFormat.Bc1:
@@ -89,10 +105,6 @@ export function getFormatBytesPerPixel(channelFormat: ChannelFormat): number {
     default:
         throw "whoops";
     }
-}
-
-function clamp(v: number, min: number, max: number): number {
-    return Math.min(Math.max(v, min), max);
 }
 
 export function getBlockHeightLog2(heightInBlocks: number): number {
@@ -130,11 +142,11 @@ export function deswizzle(swizzledSurface: SwizzledSurface): Uint8Array {
     const widthInGobs = Math.ceil(widthInBlocks * bpp / 64);
     const gobStride = 512 * blockHeight * widthInGobs;
 
-    function memcpy(dst: Uint8Array, dstOffs: number, src: ArrayBuffer, srcOffs: number, length: number) {
-        dst.set(new Uint8Array(src, srcOffs, length), dstOffs);
+    function memcpy(dst: Uint8Array, dstOffs: number, src: ArrayBufferSlice, srcOffs: number, length: number) {
+        dst.set(src.createTypedArray(Uint8Array, srcOffs, length), dstOffs);
     }
 
-    const src = swizzledSurface.buffer.castToBuffer();
+    const src = swizzledSurface.buffer;
     const dst = new Uint8Array(widthInBlocks * heightInBlocks * bpp);
     for (let y = 0; y < heightInBlocks; y++) {
         for (let x = 0; x < widthInBlocks; x++) {
@@ -226,7 +238,7 @@ export function translateImageFormat(imageFormat: ImageFormat): GfxFormat {
 
     switch (typeFormat) {
     case TypeFormat.Unorm:
-        return GfxFormat.U8_RGBA;
+        return GfxFormat.U8_RGBA_NORM;
     case TypeFormat.UnormSrgb:
         return GfxFormat.U8_RGBA_SRGB;
     case TypeFormat.Snorm:

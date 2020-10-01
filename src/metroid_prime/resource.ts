@@ -2,9 +2,10 @@
 // Resource System
 
 import * as Pako from 'pako';
+import { decompress as lzoDecompress } from "../Common/Compression/LZO";
 
 import ArrayBufferSlice from '../ArrayBufferSlice';
-import { assert, hexzero, readString } from "../util";
+import { assert, hexzero, readString, assertExists } from "../util";
 
 import { PAK, FileResource, CompressionMethod } from "./pak";
 
@@ -13,9 +14,14 @@ import * as MREA from './mrea';
 import * as STRG from './strg';
 import * as TXTR from './txtr';
 import * as CMDL from './cmdl';
+import * as ANCS from './ancs';
+import * as CHAR from './char';
+import { InputStream } from './stream';
 
-type ParseFunc<T> = (resourceSystem: ResourceSystem, assetID: string, buffer: ArrayBufferSlice) => T;
+type ParseFunc<T> = (stream: InputStream, resourceSystem: ResourceSystem, assetID: string) => T;
 type Resource = any;
+
+export const invalidAssetID: string = "\xFF\xFF\xFF\xFF";
 
 const FourCCLoaders: { [n: string]: ParseFunc<Resource> } = {
     'MLVL': MLVL.parse,
@@ -23,6 +29,8 @@ const FourCCLoaders: { [n: string]: ParseFunc<Resource> } = {
     'STRG': STRG.parse,
     'TXTR': TXTR.parse,
     'CMDL': CMDL.parse,
+    'ANCS': ANCS.parse,
+    'CHAR': CHAR.parse,
 };
 
 interface NameDataAsset {
@@ -64,7 +72,28 @@ export class ResourceSystem {
         this._cache = new Map<string, Resource>();
     }
 
-    private loadResourceBuffer_CMPD_ZLIB(buffer: ArrayBufferSlice): ArrayBufferSlice {
+    private loadResourceBuffer_LZO(buffer: ArrayBufferSlice): ArrayBufferSlice {
+        const view = buffer.createDataView();
+        const decompressedChunks: Uint8Array[] = [];
+        const decompressedSize = view.getUint32(0x00);
+
+        let remaining = decompressedSize;
+        let ptr = 0x04;
+        while (remaining > 0) {
+            const chunkCompressedSize = view.getUint16(ptr);
+            ptr += 0x02;
+            const chunkBuffer = buffer.subarray(ptr, chunkCompressedSize);
+            ptr += chunkCompressedSize;
+            const decompressedChunkBuffer = lzoDecompress(chunkBuffer, 0x4000);
+            decompressedChunks.push(decompressedChunkBuffer.createTypedArray(Uint8Array));
+            remaining -= decompressedChunkBuffer.byteLength;
+        }
+
+        const decompressedBuffer = combineBuffers(decompressedSize, decompressedChunks);
+        return new ArrayBufferSlice(decompressedBuffer.buffer);
+    }
+
+    private loadResourceBuffer_CMPD(buffer: ArrayBufferSlice, method: CompressionMethod): ArrayBufferSlice {
         const view = buffer.createDataView();
         assert(readString(buffer, 0x00, 0x04, false) === 'CMPD');
         const chunkCount = view.getUint32(0x04);
@@ -81,9 +110,23 @@ export class ResourceSystem {
                 // Left uncompressed
                 decompressedChunks.push(chunkBuffer.createTypedArray(Uint8Array));
             } else {
-                const inflated = Pako.inflate(chunkBuffer.createTypedArray(Uint8Array));
-                assert(inflated.byteLength === chunkDecompressedSize);
-                decompressedChunks.push(inflated);
+                if (method === CompressionMethod.CMPD_ZLIB) {
+                    const inflated = Pako.inflate(chunkBuffer.createTypedArray(Uint8Array));
+                    assert(inflated.byteLength === chunkDecompressedSize);
+                    decompressedChunks.push(inflated);
+                } else {
+                    let remaining = chunkDecompressedSize;
+                    let ptr = chunkDataIdx;
+                    while (remaining > 0) {
+                        const lzoChunkCompressedSize = view.getUint16(ptr);
+                        ptr += 0x02;
+                        const lzoChunkBuffer = buffer.subarray(ptr, lzoChunkCompressedSize);
+                        ptr += lzoChunkCompressedSize;
+                        const lzoDecompressedChunkBuffer = lzoDecompress(lzoChunkBuffer, 0x4000);
+                        decompressedChunks.push(lzoDecompressedChunkBuffer.createTypedArray(Uint8Array));
+                        remaining -= lzoDecompressedChunkBuffer.byteLength;
+                    }
+                }
             }
             chunkTableIdx += 0x08;
             chunkDataIdx += chunkCompressedSize;
@@ -102,8 +145,11 @@ export class ResourceSystem {
             const deflated = resource.buffer.createTypedArray(Uint8Array, 0x04);
             const inflated = Pako.inflate(deflated);
             return new ArrayBufferSlice(inflated.buffer);
-        } else if (resource.compressionMethod === CompressionMethod.CMPD_ZLIB) {
-            return this.loadResourceBuffer_CMPD_ZLIB(resource.buffer);
+        } else if (resource.compressionMethod === CompressionMethod.LZO) {
+            return this.loadResourceBuffer_LZO(resource.buffer);
+        } else if (resource.compressionMethod === CompressionMethod.CMPD_ZLIB ||
+                   resource.compressionMethod === CompressionMethod.CMPD_LZO) {
+            return this.loadResourceBuffer_CMPD(resource.buffer, resource.compressionMethod);
         } else {
             throw "whoops";
         }
@@ -112,7 +158,7 @@ export class ResourceSystem {
     public findResourceNameByID(assetID: string): string {
         const assetIDHex = hexName(assetID);
         assert(assetIDHex.length === 8 || assetIDHex.length === 16);
-        if (this.nameData) {
+        if (this.nameData !== null) {
             const nameDataAsset = this.nameData.Assets[assetIDHex];
             if (nameDataAsset)
                 return nameDataAsset.Filename;
@@ -121,7 +167,7 @@ export class ResourceSystem {
         return assetIDHex;
     }
 
-    public findResourceByID(assetID: string): FileResource {
+    public findResourceByID(assetID: string): FileResource | null {
         assert(assetID.length === 4 || assetID.length === 8);
         for (const pak of this.paks) {
             const resource = pak.resourceTable.get(assetID);
@@ -131,7 +177,7 @@ export class ResourceSystem {
         return null;
     }
 
-    public loadAssetByID(assetID: string, fourCC: string): Resource {
+    public loadAssetByID<T extends Resource>(assetID: string, fourCC: string): T | null {
         if (assetID === '\xFF\xFF\xFF\xFF' || assetID === '\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF')
             return null;
 
@@ -139,14 +185,16 @@ export class ResourceSystem {
         if (cached !== undefined)
             return cached;
 
-        const loaderFunc = FourCCLoaders[fourCC];
-        if (!loaderFunc)
-            return null;
+        const loaderFunc = assertExists(FourCCLoaders[fourCC]);
 
         const resource = this.findResourceByID(assetID);
+        if (!resource)
+            return null;
+
         assert(resource.fourCC === fourCC);
         const buffer = this.loadResourceBuffer(resource);
-        const inst = loaderFunc(this, assetID, buffer);
+        const stream = new InputStream(buffer, assetID.length);
+        const inst = loaderFunc(stream, this, assetID);
         this._cache.set(assetID, inst);
         return inst;
     }

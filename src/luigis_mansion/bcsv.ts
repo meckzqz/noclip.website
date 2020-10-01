@@ -1,18 +1,13 @@
 
 import ArrayBufferSlice from "../ArrayBufferSlice";
-import { readString, getTextDecoder } from "../util";
+import { readString, decodeString } from "../util";
 
-const sjisDecoder = getTextDecoder('sjis');
 function readStringSJIS(buffer: ArrayBufferSlice, offs: number): string {
-    const arr = buffer.createTypedArray(Uint8Array, offs);
-    const raw = sjisDecoder.decode(arr);
-    const nul = raw.indexOf('\u0000');
-    let str: string;
-    if (nul >= 0)
-        str = raw.slice(0, nul);
-    else
-        str = raw;
-    return str;
+    const view = buffer.createDataView(offs);
+    let i = 0;
+    while (view.getUint8(i) !== 0)
+        i++;
+    return decodeString(buffer.subarray(offs, i), 'sjis');
 }
 
 // Luigi's Mansion
@@ -48,17 +43,39 @@ const nameTable = [
     'arg0', 'arg1', 'arg2', 'arg3', 'arg4', 'arg5', 'arg6', 'arg7', 'arg8',
     'room_no',
 
-    'GalaxyName',
-    'ZoneName',
-    'ScenarioNo', 'ScenarioName', 'PowerStarId', 'AppearPowerStarObj', 'Comet', 'LuigiModeTimer', 'IsHidden', 'Hidden',
-    'WorldNo',
-    'SceneNo', 'MarioNo',
+    // Super Mario Galaxy
+
+    'type', 'no', 'l_id',
+    // ScenarioData
+    'GalaxyName', 'ZoneName', 'ScenarioNo', 'ScenarioName', 'PowerStarId', 'AppearPowerStarObj', 'Comet', 'LuigiModeTimer', 'IsHidden', 'Hidden', 'WorldNo', 'SceneNo', 'MarioNo',
+    // PlanetData
     'PlanetName', 'LowFlag', 'MiddleFlag', 'BloomFlag', 'WaterFlag', 'WaterFlag', 'IndirectFlag',
+    // Placement
     'Obj_arg0', 'Obj_arg1', 'Obj_arg2', 'Obj_arg3', 'Obj_arg4', 'Obj_arg5', 'Obj_arg6', 'Obj_arg7',
-    'CommonPath_ID',
+    'SW_APPEAR', 'SW_A', 'SW_B', 'SW_SLEEP',
+    'CommonPath_ID', 'FollowId', 'ClippingGroupId', 'GroupId', 'DemoGroupId', 'MapParts_ID', 'Obj_ID', 'ChildObjId',
     'RotateSpeed', 'RotateAngle', 'RotateAxis', 'RotateAccelType', 'RotateStopTime', 'RotateType',
-    'type', 'no', 'l_id', 'closed', 'path_arg0', 'parg_arg1',
+    // Gravity
+    'Range', 'Distant', 'Priority', 'Inverse', 'Power', 'Gravity_type',
+    // Path
     'id', 'pnt0_x', 'pnt0_y', 'pnt0_z', 'pnt1_x', 'pnt1_y', 'pnt1_z', 'pnt2_x', 'pnt2_y', 'pnt2_z',
+    'attribute',
+    // LightData
+    'LightID', 'AreaLightName', 'Interpolate', 'Fix',
+    'PlayerLight0PosX', 'PlayerLight0PosY', 'PlayerLight0PosZ', 'PlayerLight0ColorR', 'PlayerLight0ColorG', 'PlayerLight0ColorB', 'PlayerLight0ColorA', 'PlayerLight0FollowCamera',
+    'PlayerLight1PosX', 'PlayerLight1PosY', 'PlayerLight1PosZ', 'PlayerLight1ColorR', 'PlayerLight1ColorG', 'PlayerLight1ColorB', 'PlayerLight1ColorA', 'PlayerLight1FollowCamera',
+    'PlayerAmbientR', 'PlayerAmbientG', 'PlayerAmbientB', 'PlayerAmbientA', 'PlayerAlpha2',
+    'StrongLight0PosX', 'StrongLight0PosY', 'StrongLight0PosZ', 'StrongLight0ColorR', 'StrongLight0ColorG', 'StrongLight0ColorB', 'StrongLight0ColorA', 'StrongLight0FollowCamera',
+    'StrongLight1PosX', 'StrongLight1PosY', 'StrongLight1PosZ', 'StrongLight1ColorR', 'StrongLight1ColorG', 'StrongLight1ColorB', 'StrongLight1ColorA', 'StrongLight1FollowCamera',
+    'StrongAmbientR', 'StrongAmbientG', 'StrongAmbientB', 'StrongAmbientA', 'StrongAlpha2',
+    'WeakLight0PosX', 'WeakLight0PosY', 'WeakLight0PosZ', 'WeakLight0ColorR', 'WeakLight0ColorG', 'WeakLight0ColorB', 'WeakLight0ColorA', 'WeakLight0FollowCamera',
+    'WeakLight1PosX', 'WeakLight1PosY', 'WeakLight1PosZ', 'WeakLight1ColorR', 'WeakLight1ColorG', 'WeakLight1ColorB', 'WeakLight1ColorA', 'WeakLight1FollowCamera',
+    'WeakAmbientR', 'WeakAmbientG', 'WeakAmbientB', 'WeakAmbientA', 'WeakAlpha2',
+    'PlanetLight0PosX', 'PlanetLight0PosY', 'PlanetLight0PosZ', 'PlanetLight0ColorR', 'PlanetLight0ColorG', 'PlanetLight0ColorB', 'PlanetLight0ColorA', 'PlanetLight0FollowCamera',
+    'PlanetLight1PosX', 'PlanetLight1PosY', 'PlanetLight1PosZ', 'PlanetLight1ColorR', 'PlanetLight1ColorG', 'PlanetLight1ColorB', 'PlanetLight1ColorA', 'PlanetLight1FollowCamera',
+    'PlanetAmbientR', 'PlanetAmbientG', 'PlanetAmbientB', 'PlanetAmbientA', 'PlanetAlpha2',
+    // Shadow
+    'Name', 'GroupName', 'Joint', 'DropOffsetX', 'DropOffsetY', 'DropOffsetZ', 'DropStart', 'DropLength', 'SyncShow', 'FollowScale', 'Collision', 'Gravity',
 ];
 
 const hashLookup = new Map<number, string>();
@@ -76,11 +93,12 @@ function findNameFromHash(hash: number): string {
 }
 
 export const enum BcsvFieldType {
-    Int = 0,
-    String = 1,
-    Float = 2,
-    Short = 4,
-    Byte = 5,
+    S32 = 0,
+    // TODO(jstpierre): Verify
+    STRING = 1,
+    F32 = 2,
+    S16 = 4,
+    S8 = 5,
     SJIS = 6,
 }
 
@@ -133,20 +151,21 @@ export function parse(buffer: ArrayBufferSlice, littleEndian: boolean = false): 
             const fieldOffs = recordTableIdx + field.recordOffset;
             let value;
             switch (field.type) {
-            case BcsvFieldType.Int:
-                value = (view.getUint32(fieldOffs, littleEndian) >> field.shift) & field.bitmask;
+            case BcsvFieldType.S32:
+                value = (view.getInt32(fieldOffs, littleEndian) & field.bitmask) >> field.shift;
                 break;
-            case BcsvFieldType.String:
+            case BcsvFieldType.STRING:
                 value = readString(buffer, fieldOffs, 0x20, true);
                 break;
-            case BcsvFieldType.Float:
+            case BcsvFieldType.F32:
                 value = view.getFloat32(fieldOffs, littleEndian);
                 break;
-            case BcsvFieldType.Short:
-                value = (view.getUint16(fieldOffs, littleEndian) >> field.shift) & field.bitmask;
+            case BcsvFieldType.S16:
+                value = ((view.getInt16(fieldOffs, littleEndian) & field.bitmask) >> field.shift) << 16 >> 16;
                 break;
-            case BcsvFieldType.Byte:
-                value = (view.getUint8(fieldOffs) >> field.shift) & field.bitmask;
+            case BcsvFieldType.S8:
+                value = ((view.getInt8(fieldOffs) & field.bitmask) >> field.shift) << 24 >> 24;
+                break;
             case BcsvFieldType.SJIS: {
                 const strOffs = strTableOffs + view.getUint32(fieldOffs, littleEndian);
                 value = readStringSJIS(buffer, strOffs);
@@ -167,7 +186,10 @@ export function parse(buffer: ArrayBufferSlice, littleEndian: boolean = false): 
 }
 
 export function getFieldIndexFromHash(bcsv: Bcsv, nameHash: number): number {
-    return bcsv.fields.findIndex((field) => field.nameHash === nameHash);
+    for (let i = 0; i < bcsv.fields.length; i++)
+        if (bcsv.fields[i].nameHash === nameHash)
+            return i;
+    return -1;
 }
 
 export function getFieldIndexFromName(bcsv: Bcsv, name: string): number {
@@ -190,9 +212,9 @@ export function getEntriesWithField<T extends BcsvValue>(bcsv: Bcsv, name: strin
     return { fields, records };
 }
 
-export function getField<T extends BcsvValue>(bcsv: Bcsv, record: BcsvRecord, name: string, fallback: T | null = null): T {
+export function getField<T extends BcsvValue>(bcsv: Bcsv, record: BcsvRecord, name: string): T | null {
     const index = getFieldIndexFromName(bcsv, name);
     if (index === -1)
-        return fallback;
+        return null;
     return record[index] as T;
 }

@@ -1,20 +1,16 @@
 (module
- (type $FUNCSIG$viii (func (param i32 i32 i32)))
- (type $FUNCSIG$v (func))
+ (type $i32_i32_i32_=>_none (func (param i32 i32 i32)))
  (memory $0 0)
- (table $0 1 funcref)
- (elem (i32.const 0) $null)
  (export "memory" (memory $0))
- (export "table" (table $0))
  (export "decompress" (func $Yaz0_as/decompress))
- (func $Yaz0_as/decompress (; 0 ;) (type $FUNCSIG$viii) (param $0 i32) (param $1 i32) (param $2 i32)
+ (func $Yaz0_as/decompress (; 0 ;) (param $0 i32) (param $1 i32) (param $2 i32)
   (local $3 i32)
   (local $4 i32)
   (local $5 i32)
   (local $6 i32)
   (local $7 i32)
   (local $8 i32)
-  loop $continue|0
+  loop $while-continue|0
    local.get $1
    local.tee $3
    i32.const 1
@@ -25,7 +21,7 @@
    local.set $7
    i32.const 8
    local.set $6
-   loop $continue|1
+   loop $while-continue|1
     local.get $6
     local.tee $3
     i32.const 1
@@ -57,13 +53,15 @@
       local.get $4
       i32.load8_u
       i32.store8
-     else      
+     else
       local.get $1
       i32.load16_u
       local.tee $3
       i32.const 8
       i32.shl
       local.get $3
+      i32.const 65535
+      i32.and
       i32.const 8
       i32.shr_u
       i32.or
@@ -96,11 +94,11 @@
        i32.const 1
        i32.add
        local.set $1
+       local.get $5
        local.get $3
        i32.load8_u
        i32.const 16
        i32.add
-       local.get $5
        i32.add
        local.set $5
       end
@@ -112,9 +110,11 @@
       local.set $3
       local.get $2
       local.get $5
+      i32.const 65535
+      i32.and
       i32.sub
       local.set $2
-      loop $continue|2
+      loop $while-continue|2
        local.get $5
        local.tee $4
        i32.const 1
@@ -138,7 +138,7 @@
         local.get $8
         i32.load8_u
         i32.store8
-        br $continue|2
+        br $while-continue|2
        end
       end
      end
@@ -148,15 +148,11 @@
      if
       return
      end
-     br $continue|1
+     br $while-continue|1
     end
    end
-   br $continue|0
-   unreachable
+   br $while-continue|0
   end
   unreachable
- )
- (func $null (; 1 ;) (type $FUNCSIG$v)
-  nop
  )
 )

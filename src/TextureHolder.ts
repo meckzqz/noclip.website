@@ -2,9 +2,9 @@
 import * as Viewer from './viewer';
 import { GfxSampler, GfxTexture, GfxDevice } from './gfx/platform/GfxPlatform';
 
-// Used mostly by indirect texture FB installations...
 export interface TextureOverride {
     gfxTexture: GfxTexture;
+    gfxSampler?: GfxSampler;
     width: number;
     height: number;
     flipY: boolean;
@@ -17,27 +17,42 @@ export interface TextureBase {
 }
 
 export class TextureMapping {
-    public gfxTexture: GfxTexture = null;
-    public gfxSampler: GfxSampler = null;
+    public gfxTexture: GfxTexture | null = null;
+    public gfxSampler: GfxSampler | null = null;
+    public lateBinding: string | null = null;
+    // These are not used when binding to samplers, and are conveniences for custom behavior.
+    // TODO(jstpierre): Are any of these really worth anything?
     public width: number = 0;
     public height: number = 0;
     public lodBias: number = 0;
-    // GL fucking sucks. This is a convenience when building texture matrices.
+    // GL sucks. This is a convenience when building texture matrices.
     // The core renderer does not use this code at all.
     public flipY: boolean = false;
 
     public reset(): void {
         this.gfxTexture = null;
         this.gfxSampler = null;
+        this.lateBinding = null;
         this.width = 0;
         this.height = 0;
         this.lodBias = 0;
         this.flipY = false;
     }
 
+    public fillFromTextureOverride(textureOverride: TextureOverride): boolean {
+        this.gfxTexture = textureOverride.gfxTexture;
+        if (textureOverride.gfxSampler)
+            this.gfxSampler = textureOverride.gfxSampler;
+        this.width = textureOverride.width;
+        this.height = textureOverride.height;
+        this.flipY = textureOverride.flipY;
+        return true;
+    }
+
     public copy(other: TextureMapping): void {
         this.gfxTexture = other.gfxTexture;
         this.gfxSampler = other.gfxSampler;
+        this.lateBinding = other.lateBinding;
         this.width = other.width;
         this.height = other.height;
         this.lodBias = other.lodBias;
@@ -50,6 +65,7 @@ export interface LoadedTexture {
     viewerTexture: Viewer.Texture;
 }
 
+// TODO(jstpierre): TextureHolder needs to die.
 export abstract class TextureHolder<TextureType extends TextureBase> {
     public viewerTextures: Viewer.Texture[] = [];
     public gfxTextures: GfxTexture[] = [];
@@ -59,6 +75,10 @@ export abstract class TextureHolder<TextureType extends TextureBase> {
 
     public destroy(device: GfxDevice): void {
         this.gfxTextures.forEach((texture) => device.destroyTexture(texture));
+        this.viewerTextures.length = 0;
+        this.gfxTextures.length = 0;
+        this.textureEntries.length = 0;
+        this.textureOverrides.clear();
     }
 
     protected searchTextureEntryIndex(name: string): number {
@@ -89,10 +109,7 @@ export abstract class TextureHolder<TextureType extends TextureBase> {
     public fillTextureMapping(textureMapping: TextureMapping, name: string): boolean {
         const textureOverride = this.textureOverrides.get(name);
         if (textureOverride) {
-            textureMapping.gfxTexture = textureOverride.gfxTexture;
-            textureMapping.width = textureOverride.width;
-            textureMapping.height = textureOverride.height;
-            textureMapping.flipY = textureOverride.flipY;
+            textureMapping.fillFromTextureOverride(textureOverride);
             return true;
         }
 
@@ -102,7 +119,8 @@ export abstract class TextureHolder<TextureType extends TextureBase> {
             return true;
         }
 
-        throw new Error(`Cannot find texture ${name}`);
+        // throw new Error(`Cannot find texture ${name}`);
+        return false;
     }
 
     public findTexture(name: string): TextureType | null {
@@ -121,9 +139,11 @@ export abstract class TextureHolder<TextureType extends TextureBase> {
 
     protected abstract loadTexture(device: GfxDevice, textureEntry: TextureType): LoadedTexture | null;
 
-    public addTextures(device: GfxDevice, textureEntries: TextureType[], overwrite: boolean = false): void {
+    public addTextures(device: GfxDevice, textureEntries: (TextureType | null)[], overwrite: boolean = false): void {
         for (let i = 0; i < textureEntries.length; i++) {
             const texture = textureEntries[i];
+            if (texture === null)
+                continue;
 
             let index = this.textureEntries.findIndex((entry) => entry.name === texture.name);
             // Don't add dupes for the same name.

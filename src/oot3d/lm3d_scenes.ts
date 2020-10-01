@@ -9,13 +9,13 @@ import * as CTXB from './ctxb';
 
 import * as Viewer from '../viewer';
 
-import Progressable from '../Progressable';
-import { CmbRenderer, CmbData } from './render';
+import { CmbInstance, CmbData } from './render';
 import { SceneGroup } from '../viewer';
-import { fetchData } from '../fetch';
-import { leftPad } from '../util';
+import { leftPad, assertExists } from '../util';
 import { GfxDevice } from '../gfx/platform/GfxPlatform';
 import { GrezzoTextureHolder, MultiCmbScene } from './scenes';
+import { computeModelMatrixSRT } from '../MathHelpers';
+import { SceneContext } from '../SceneBase';
 
 class SceneDesc implements Viewer.SceneDesc {
     public id: string;
@@ -24,38 +24,39 @@ class SceneDesc implements Viewer.SceneDesc {
         this.id = `map${mapNumber}`;
     }
 
-    public createScene(device: GfxDevice, abortSignal: AbortSignal): Progressable<Viewer.SceneGfx> {
+    public createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
         // Fetch the ZAR & info ZSI.
         const path_gar = `lm3d/map/map${leftPad(''+this.mapNumber, 2, '0')}.gar`;
         const models_path = `lm3d/mapmdl/map${this.mapNumber}`;
 
         const textureHolder = new GrezzoTextureHolder();
+        const dataFetcher = context.dataFetcher;
 
-        return fetchData(path_gar, abortSignal).then((garBuffer) => {
+        return dataFetcher.fetchData(path_gar).then((garBuffer) => {
             const gar = ZAR.parse(garBuffer);
 
-            const jmpGarFile = gar.files.find((file) => file.name === 'JMP.gar');
+            const jmpGarFile = assertExists(gar.files.find((file) => file.name === 'JMP.gar'));
             const jmpGar = ZAR.parse(jmpGarFile.buffer);
-            const roomInfoFile = jmpGar.files.find((file) => file.name === 'RoomInfo.gseb');
+            const roomInfoFile = assertExists(jmpGar.files.find((file) => file.name === 'RoomInfo.gseb'));
             const roomInfo = BCSV.parse(roomInfoFile.buffer, true);
-            const furnitureInfoFile = jmpGar.files.find((file) => file.name === 'FurnitureInfo.gseb');
+            const furnitureInfoFile = assertExists(jmpGar.files.find((file) => file.name === 'FurnitureInfo.gseb'));
             const furnitureInfo = BCSV.parse(furnitureInfoFile.buffer, true);
 
             const modelCache = new Map<string, CmbData>();
 
             const renderer = new MultiCmbScene(device, textureHolder);
-            const progressables: Progressable<CmbRenderer>[] = [];
+            const promises: Promise<void>[] = [];
             for (let i = 0; i < roomInfo.records.length; i++) {
-                progressables.push(fetchData(`${models_path}/room_${leftPad(''+i, 2, '0')}.gar`, abortSignal).then((outerRoomGarBuf) => {
+                promises.push(dataFetcher.fetchData(`${models_path}/room_${leftPad(''+i, 2, '0')}.gar`).then((outerRoomGarBuf) => {
                     const outerRoomGar = ZAR.parse(outerRoomGarBuf);
                     const roomGarFile = outerRoomGar.files.find((file) => file.name === 'room.gar');
                     if (roomGarFile === undefined)
-                        return null;
+                        return;
 
                     const roomGar = ZAR.parse(roomGarFile.buffer);
 
                     // TODO(jstpierre): How does the engine know which CMB file to spawn?
-                    const firstCMB = roomGar.files.find((file) => file.name.endsWith('.cmb'));
+                    const firstCMB = assertExists(roomGar.files.find((file) => file.name.endsWith('.cmb')));
                     const cmb = CMB.parse(firstCMB.buffer);
                     const ctxbFiles = roomGar.files.filter((file) => file.name.endsWith('.ctxb'));
 
@@ -65,11 +66,10 @@ class SceneDesc implements Viewer.SceneDesc {
                     }
 
                     const cmbData = new CmbData(device, cmb);
-                    textureHolder.addTextures(device, cmb.textures);
+                    textureHolder.addCMB(device, cmb);
                     renderer.cmbData.push(cmbData);
 
-                    const cmbRenderer = new CmbRenderer(device, textureHolder, cmbData, cmb.name);
-                    cmbRenderer.addToViewRenderer(device, renderer.viewRenderer);
+                    const cmbRenderer = new CmbInstance(device, textureHolder, cmbData, cmb.name);
                     renderer.cmbRenderers.push(cmbRenderer);
 
                     const cmbBasename = firstCMB.name.split('.')[0];
@@ -92,7 +92,7 @@ class SceneDesc implements Viewer.SceneDesc {
                         if (cmbFile === undefined)
                             continue;
 
-                        let cmbData: CmbData = modelCache.get(cmbFilename);
+                        let cmbData: CmbData | undefined = modelCache.get(cmbFilename);
                         if (cmbData === undefined) {
                             const cmb = CMB.parse(cmbFile.buffer);
                             cmbData = new CmbData(device, cmb);
@@ -101,23 +101,22 @@ class SceneDesc implements Viewer.SceneDesc {
                             modelCache.set(cmbFilename, cmbData);
                         }
 
-                        const cmbRenderer = new CmbRenderer(device, textureHolder, cmbData, cmb.name);
-                        cmbRenderer.addToViewRenderer(device, renderer.viewRenderer);
+                        const cmbRenderer = new CmbInstance(device, textureHolder, cmbData, cmb.name);
 
-                        const rotationX = BCSV.getField<number>(roomFurnitureEntries, record, "dir_x") / 180 * Math.PI;
-                        const rotationY = BCSV.getField<number>(roomFurnitureEntries, record, "dir_y") / 180 * Math.PI;
-                        const rotationZ = BCSV.getField<number>(roomFurnitureEntries, record, "dir_z") / 180 * Math.PI;
-                        const translationX = BCSV.getField<number>(roomFurnitureEntries, record, "pos_x");
-                        const translationY = BCSV.getField<number>(roomFurnitureEntries, record, "pos_y");
-                        const translationZ = BCSV.getField<number>(roomFurnitureEntries, record, "pos_z");
-                        CMB.calcModelMtx(cmbRenderer.modelMatrix, 1, 1, 1, rotationX, rotationY, rotationZ, translationX, translationY, translationZ);
+                        const rotationX = assertExists(BCSV.getField<number>(roomFurnitureEntries, record, "dir_x")) / 180 * Math.PI;
+                        const rotationY = assertExists(BCSV.getField<number>(roomFurnitureEntries, record, "dir_y")) / 180 * Math.PI;
+                        const rotationZ = assertExists(BCSV.getField<number>(roomFurnitureEntries, record, "dir_z")) / 180 * Math.PI;
+                        const translationX = assertExists(BCSV.getField<number>(roomFurnitureEntries, record, "pos_x"));
+                        const translationY = assertExists(BCSV.getField<number>(roomFurnitureEntries, record, "pos_y"));
+                        const translationZ = assertExists(BCSV.getField<number>(roomFurnitureEntries, record, "pos_z"));
+                        computeModelMatrixSRT(cmbRenderer.modelMatrix, 1, 1, 1, rotationX, rotationY, rotationZ, translationX, translationY, translationZ);
 
                         renderer.cmbRenderers.push(cmbRenderer);
                     }
                 }));
             }
 
-            return Progressable.all(progressables).then(() => {
+            return dataFetcher.waitForLoad().then(() => {
                 return renderer;
             });
         });

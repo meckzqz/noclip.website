@@ -4,7 +4,7 @@ import { readString, assert } from "../util";
 import { mat4, vec3, quat } from "gl-matrix";
 
 import * as GX from "../gx/gx_enum";
-import { compileVtxLoader, GX_VtxAttrFmt, GX_VtxDesc, GX_Array, LoadedVertexData, LoadedVertexLayout } from '../gx/gx_displaylist';
+import { compileVtxLoader, GX_VtxAttrFmt, GX_VtxDesc, GX_Array, LoadedVertexData, LoadedVertexLayout, getAttributeByteSize } from '../gx/gx_displaylist';
 import * as GX_Material from '../gx/gx_material';
 import { AABB } from "../Geometry";
 
@@ -46,7 +46,7 @@ export interface SceneGraphPart {
 export interface SceneGraphNode {
     children: SceneGraphNode[];
     modelMatrix: mat4;
-    bbox: AABB;
+    bbox: AABB | null;
     parts: SceneGraphPart[];
 }
 
@@ -93,7 +93,7 @@ export function parse(buffer: ArrayBufferSlice, name: string): BIN {
             samplers[index] = parseSampler(index);
     }
 
-    function parseBatch(index: number): Batch {
+    function parseBatch(index: number): Batch | null {
         const offs = batchChunkOffs + (0x18 * index);
 
         // Not used in-game.
@@ -112,23 +112,23 @@ export function parse(buffer: ArrayBufferSlice, name: string): BIN {
         const vat: GX_VtxAttrFmt[] = [];
 
         // Should always have position.
-        assert((attributes & (1 << GX.VertexAttribute.POS)) !== 0);
-        vat[GX.VertexAttribute.POS] = { compCnt: GX.CompCnt.POS_XYZ, compType: GX.CompType.S16, compShift: 0 };
+        assert((attributes & (1 << GX.Attr.POS)) !== 0);
+        vat[GX.Attr.POS] = { compCnt: GX.CompCnt.POS_XYZ, compType: GX.CompType.S16, compShift: 0 };
         // Should always have tex0.
-        if (!(attributes & (1 << GX.VertexAttribute.TEX0))) {
+        if (!(attributes & (1 << GX.Attr.TEX0))) {
             // If we don't have TEX0, then skip this batch...
             console.warn(`Batch ${index} does not have TEX0. WTF? / Attributes: ${attributes.toString(16)}`);
             return null;
         }
-        vat[GX.VertexAttribute.TEX0] = { compCnt: GX.CompCnt.TEX_ST, compType: GX.CompType.F32, compShift: 0 };
-        vat[GX.VertexAttribute.NRM] = { compCnt: nbt3 ? GX.CompCnt.NRM_NBT3 : GX.CompCnt.NRM_NBT, compType: GX.CompType.F32, compShift: 0 };
+        vat[GX.Attr.TEX0] = { compCnt: GX.CompCnt.TEX_ST, compType: GX.CompType.F32, compShift: 0 };
+        vat[GX.Attr.NRM] = { compCnt: nbt3 ? GX.CompCnt.NRM_NBT3 : GX.CompCnt.NRM_NBT, compType: GX.CompType.F32, compShift: 0 };
 
         // Set up our input vertex description.
         const vcd: GX_VtxDesc[] = [];
-        for (let i = 0; i <= GX.VertexAttribute.MAX; i++) {
+        for (let i = 0; i <= GX.Attr.MAX; i++) {
             if ((attributes & (1 << i)) !== 0) {
                 // Only care about TEX0 and POS for now...
-                const enableOutput = (i === GX.VertexAttribute.POS || i === GX.VertexAttribute.TEX0);
+                const enableOutput = (i === GX.Attr.POS || i === GX.Attr.TEX0);
                 vcd[i] = { type: GX.AttrType.INDEX16, enableOutput };
             }
         }
@@ -138,8 +138,8 @@ export function parse(buffer: ArrayBufferSlice, name: string): BIN {
         const displayListBuffer = buffer.subarray(displayListOffset, displayListSize);
 
         const vtxArrays: GX_Array[] = [];
-        vtxArrays[GX.VertexAttribute.POS] = { buffer, offs: positionBufferOffs };
-        vtxArrays[GX.VertexAttribute.TEX0] = { buffer, offs: tex0BufferOffs };
+        vtxArrays[GX.Attr.POS] = { buffer, offs: positionBufferOffs,stride: getAttributeByteSize(vat, GX.Attr.POS) };
+        vtxArrays[GX.Attr.TEX0] = { buffer, offs: tex0BufferOffs, stride: getAttributeByteSize(vat, GX.Attr.TEX0) };
 
         let loadedVertexData;
         try {
@@ -186,14 +186,12 @@ export function parse(buffer: ArrayBufferSlice, name: string): BIN {
         const lightChannels: GX_Material.LightChannelControl[] = [lightChannel0, lightChannel0];
 
         const tevStage0: GX_Material.TevStage = {
-            index: 0,
-
             channelId: GX.RasColorChannelID.COLOR0A0,
 
-            alphaInA: GX.CombineAlphaInput.ZERO,
-            alphaInB: GX.CombineAlphaInput.ZERO,
-            alphaInC: GX.CombineAlphaInput.ZERO,
-            alphaInD: GX.CombineAlphaInput.TEXA,
+            alphaInA: GX.CA.ZERO,
+            alphaInB: GX.CA.ZERO,
+            alphaInC: GX.CA.ZERO,
+            alphaInD: GX.CA.TEXA,
             alphaOp: GX.TevOp.ADD,
             alphaBias: GX.TevBias.ZERO,
             alphaClamp: false,
@@ -201,10 +199,10 @@ export function parse(buffer: ArrayBufferSlice, name: string): BIN {
             alphaRegId: GX.Register.PREV,
             konstAlphaSel: GX.KonstAlphaSel.KASEL_1,
 
-            colorInA: GX.CombineColorInput.ZERO,
-            colorInB: GX.CombineColorInput.ZERO,
-            colorInC: GX.CombineColorInput.ZERO,
-            colorInD: GX.CombineColorInput.TEXC,
+            colorInA: GX.CC.ZERO,
+            colorInB: GX.CC.ZERO,
+            colorInC: GX.CC.ZERO,
+            colorInD: GX.CC.TEXC,
             colorOp: GX.TevOp.ADD,
             colorBias: GX.TevBias.ZERO,
             colorClamp: false,
@@ -236,22 +234,22 @@ export function parse(buffer: ArrayBufferSlice, name: string): BIN {
             referenceB: 0.0,
         };
 
-        const blendMode: GX_Material.BlendMode = {
-            type: GX.BlendMode.NONE,
-            srcFactor: GX.BlendFactor.ONE,
-            dstFactor: GX.BlendFactor.ONE,
-            logicOp: GX.LogicOp.CLEAR,
-        };
-
         const ropInfo: GX_Material.RopInfo = {
-            blendMode,
+            fogType: GX.FogType.NONE,
+            fogAdjEnabled: false,
+            blendMode: GX.BlendMode.NONE,
+            blendSrcFactor: GX.BlendFactor.ONE,
+            blendDstFactor: GX.BlendFactor.ONE,
+            blendLogicOp: GX.LogicOp.CLEAR,
             depthFunc: GX.CompareType.LESS,
             depthTest: true,
             depthWrite: true,
+            colorUpdate: true,
+            alphaUpdate: false,
         };
 
         const gxMaterial: GX_Material.GXMaterial = {
-            index, name: `${name} unknown material ${index}`,
+            name: `${name} unknown material ${index}`,
             cullMode: GX.CullMode.BACK,
             lightChannels,
             texGens,
@@ -297,7 +295,7 @@ export function parse(buffer: ArrayBufferSlice, name: string): BIN {
         const bboxMaxZ = view.getFloat32(nodeOffs + 0x44, false);
         // const unk = view.getFloat32(nodeOffs + 0x48, false);
 
-        let bbox: AABB = null;
+        let bbox: AABB | null = null;
         if (bboxMinX !== 0 || bboxMinY !== 0 || bboxMinZ !== 0 || bboxMaxX !== 0 || bboxMaxY !== 0 || bboxMaxZ !== 0) {
             bbox = new AABB(bboxMinX, bboxMinY, bboxMinZ, bboxMaxX, bboxMaxY, bboxMaxZ);
         }

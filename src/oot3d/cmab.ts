@@ -5,10 +5,11 @@ import { readString, assert } from "../util";
 import { mat4 } from "gl-matrix";
 import { Color, colorFromRGBA } from "../Color";
 import { Texture, TextureLevel, Version, calcTexMtx } from "./cmb";
-import { decodeTexture, computeTextureByteSize } from "./pica_texture";
+import { decodeTexture, computeTextureByteSize, getTextureFormatFromGLFormat } from "./pica_texture";
 import { getPointHermite } from "../Spline";
 import { TextureMapping } from "../TextureHolder";
 import { CtrTextureHolder } from "./render";
+import { lerp } from "../MathHelpers";
 
 // CMAB (CTR Material Animation Binary)
 // Seems to be inspired by the .cmata file format. Perhaps an earlier version of NW4C used it?
@@ -76,7 +77,7 @@ const enum LoopMode {
     ONCE, REPEAT,
 }
 
-function parseTrack(version: Version, buffer: ArrayBufferSlice): AnimationTrack {
+function parseTrack(version: Version, buffer: ArrayBufferSlice): AnimationTrack | null {
     const view = buffer.createDataView();
 
     let type: AnimationTrackType;
@@ -96,13 +97,15 @@ function parseTrack(version: Version, buffer: ArrayBufferSlice): AnimationTrack 
         timeEnd = view.getUint32(0x04, true);
         unk1 = view.getFloat32(0x08, true);
         unk2 = view.getUint32(0x0C, true);
+    } else {
+        throw "whoops";
     }
 
     let keyframeTableIdx: number = 0x10;
 
     // WTF does this mean?
     if (numKeyframes === 0)
-        return undefined;
+        return null;
 
     if (type === AnimationTrackType.LINEAR) {
         const frames: AnimationKeyframeLinear[] = [];
@@ -151,7 +154,7 @@ function parseTxpt(buffer: ArrayBufferSlice, texData: ArrayBufferSlice | null, s
         const unk06 = view.getUint16(txptTableIdx + 0x06, true);
         const width = view.getUint16(txptTableIdx + 0x08, true);
         const height = view.getUint16(txptTableIdx + 0x0A, true);
-        const format = view.getUint32(txptTableIdx + 0x0C, true);
+        const glFormat = view.getUint32(txptTableIdx + 0x0C, true);
         let dataOffs = view.getUint32(txptTableIdx + 0x10, true);
         const nameStringIndex = view.getUint32(txptTableIdx + 0x14, true);
         const rawName = stringTable[nameStringIndex];
@@ -159,6 +162,8 @@ function parseTxpt(buffer: ArrayBufferSlice, texData: ArrayBufferSlice | null, s
         const dataEnd = dataOffs + size;
 
         const levels: TextureLevel[] = [];
+
+        const format = getTextureFormatFromGLFormat(glFormat);
 
         if (texData !== null) {
             let mipWidth = width, mipHeight = height;
@@ -171,7 +176,7 @@ function parseTxpt(buffer: ArrayBufferSlice, texData: ArrayBufferSlice | null, s
             }
         }
 
-        textures.push({ name, format, width, height, levels, totalTextureSize: size });
+        textures.push({ name, format, width, height, levels });
 
         txptTableIdx += 0x18;
     }
@@ -199,7 +204,9 @@ function parseMmad(version: Version, buffer: ArrayBufferSlice): AnimationEntry {
             if (trackOffs === 0x00)
                 continue;
 
-            tracks[i] = parseTrack(version, buffer.slice(trackOffs));
+            const track = parseTrack(version, buffer.slice(trackOffs));
+            if (track !== null)
+                tracks[i] = track;
         }
     } else if (animationType === AnimationType.TEXTURE_PALETTE) {
         for (let i = 0; i < 1; i++) {
@@ -209,7 +216,9 @@ function parseMmad(version: Version, buffer: ArrayBufferSlice): AnimationEntry {
             if (trackOffs === 0x00)
                 continue;
 
-            tracks[i] = parseTrack(version, buffer.slice(trackOffs));
+            const track = parseTrack(version, buffer.slice(trackOffs));
+            if (track !== null)
+                tracks[i] = track;
         }
     } else if (animationType === AnimationType.COLOR) {
         for (let i = 0; i < 4; i++) {
@@ -219,7 +228,9 @@ function parseMmad(version: Version, buffer: ArrayBufferSlice): AnimationEntry {
             if (trackOffs === 0x00)
                 continue;
 
-            tracks[i] = parseTrack(version, buffer.slice(trackOffs));
+            const track = parseTrack(version, buffer.slice(trackOffs));
+            if (track !== null)
+                tracks[i] = track;
         }
     } else if (animationType === AnimationType.ROTATION) {
         for (let i = 0; i < 1; i++) {
@@ -229,7 +240,9 @@ function parseMmad(version: Version, buffer: ArrayBufferSlice): AnimationEntry {
             if (trackOffs === 0x00)
                 continue;
 
-            tracks[i] = parseTrack(version, buffer.slice(trackOffs));
+            const track = parseTrack(version, buffer.slice(trackOffs));
+            if (track !== null)
+                tracks[i] = track;
         }
     }
 
@@ -296,10 +309,6 @@ export function parse(version: Version, buffer: ArrayBufferSlice, textureNamePre
     return { duration, loopMode, animEntries, textures };
 }
 
-function lerp(k0: AnimationKeyframeLinear, k1: AnimationKeyframeLinear, t: number) {
-    return k0.value + (k1.value - k0.value) * t;
-}
-
 function sampleAnimationTrackLinear(track: AnimationTrackLinear, frame: number): number {
     const frames = track.frames;
 
@@ -315,7 +324,7 @@ function sampleAnimationTrackLinear(track: AnimationTrackLinear, frame: number):
     const k1 = frames[idx1];
 
     const t = (frame - k0.time) / (k1.time - k0.time);
-    return lerp(k0, k1, t);
+    return lerp(k0.value, k1.value, t);
 }
 
 function hermiteInterpolate(k0: AnimationKeyframeHermite, k1: AnimationKeyframeHermite, t: number): number {

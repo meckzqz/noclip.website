@@ -1,25 +1,28 @@
 
 import * as Viewer from '../viewer';
-import Progressable from '../Progressable';
-import { fetchData } from '../fetch';
+import { DataFetcher } from '../DataFetcher';
 import ArrayBufferSlice from '../ArrayBufferSlice';
-import * as RARC from '../j3d/rarc';
+import * as RARC from '../Common/JSYSTEM/JKRArchive';
 import * as BIN from './bin';
 import { LuigisMansionRenderer } from './render';
 import { GfxDevice } from '../gfx/platform/GfxPlatform';
+import { SceneContext } from '../SceneBase';
+import { assertExists } from '../util';
 
-function fetchBin(path: string, abortSignal: AbortSignal): Progressable<BIN.BIN> {
-    return fetchData(`luigis_mansion/${path}`, abortSignal).then((buffer: ArrayBufferSlice) => {
-        let binBuffer;
+function fetchBin(path: string, dataFetcher: DataFetcher): Promise<BIN.BIN> {
+    return dataFetcher.fetchData(`luigis_mansion/${path}`).then((buffer: ArrayBufferSlice) => {
+        let binBuffer: ArrayBufferSlice;
         if (path.endsWith('.bin')) {
             binBuffer = buffer;
         } else if (path.endsWith('.arc')) {
             const rarc = RARC.parse(buffer);
-            const roomBinFile = rarc.findFile('room.bin');
+            const roomBinFile = assertExists(rarc.findFile('room.bin'));
             binBuffer = roomBinFile.buffer;
+        } else {
+            throw "whoops";
         }
 
-        const name = path.split('/').pop();
+        const name = path.split('/').pop()!;
         return BIN.parse(binBuffer, name);
     });
 }
@@ -27,13 +30,14 @@ function fetchBin(path: string, abortSignal: AbortSignal): Progressable<BIN.BIN>
 class LuigisMansionBinSceneDesc implements Viewer.SceneDesc {
     constructor(public id: string, public name: string, public paths: string[]) {}
 
-    public createScene(device: GfxDevice, abortSignal: AbortSignal): Progressable<Viewer.SceneGfx> {
-        const promises: Progressable<BIN.BIN>[] = this.paths.map((path) => fetchBin(path, abortSignal));
+    public createScene(device: GfxDevice, context: SceneContext): Promise<Viewer.SceneGfx> {
+        const dataFetcher = context.dataFetcher;
+        const promises: Promise<BIN.BIN>[] = this.paths.map((path) => fetchBin(path, dataFetcher));
 
         // TODO(jstpierre): J3D format in VRB has a different version with a different MAT3 chunk.
         // promises.unshift(fetchVRBScene(gl, `vrball_B.szp`));
 
-        return Progressable.all(promises).then((bins: BIN.BIN[]) => {
+        return Promise.all(promises).then((bins: BIN.BIN[]) => {
             return new LuigisMansionRenderer(device, bins);
         });
     }

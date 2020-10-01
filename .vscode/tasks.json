@@ -11,15 +11,6 @@
                 "kind": "build",
                 "isDefault": true
             }
-        },
-        {
-            "type": "npm",
-            "script": "typecheck",
-            "presentation": {
-                "reveal": "silent",
-            },
-            "group": "none",
-            "problemMatcher": "$tsc"
         }
     ]
 }
