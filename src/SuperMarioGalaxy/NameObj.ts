@@ -24,6 +24,7 @@ export const enum MovementType {
     ScreenEffect                   = 0x03,
     SensorHitChecker               = 0x05,
     MsgSharedGroup                 = 0x06,
+    DemoDirector                   = 0x0B,
     AreaObj                        = 0x0D,
     Model3DFor2D                   = 0x0E,
     ImageEffect                    = 0x17,
@@ -104,9 +105,11 @@ export const enum DrawType {
     OceanRing                      = 0x08,
     OceanRingOutside               = 0x0A,
     OceanSphere                    = 0x0B,
+    WhirlPoolAccelerator           = 0x0D,
     ElectricRailHolder             = 0x0E,
     WarpPodPath                    = 0x18,
     WaterPlant                     = 0x1B,
+    EyeBeamer                      = 0x1C,
     Flag                           = 0x1D,
     AstroDomeSkyClear              = 0x1E,
     AstroDomeOrbit                 = 0x1F,
@@ -224,7 +227,7 @@ export class NameObjGroup<T extends NameObj> extends NameObj {
         super(sceneObjHolder, name);
     }
 
-    protected registerObj(obj: T): void {
+    public registerObj(obj: T): void {
         this.objArray.push(obj);
 
         assert(this.objArray.length <= this.maxCount);

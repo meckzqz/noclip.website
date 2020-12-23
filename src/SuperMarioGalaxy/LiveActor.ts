@@ -1,26 +1,26 @@
 
-import { NameObj, NameObjGroup, MovementType } from "./NameObj";
-import { EffectKeeper } from "./EffectSystem";
-import { Spine } from "./Spine";
-import { ActorLightCtrl } from "./LightData";
-import { vec3, mat4 } from "gl-matrix";
-import { SceneObjHolder, getObjectName, getDeltaTimeFrames, ResourceHolder, SpecialTextureType } from "./Main";
-import { JMapInfoIter, createCsvParser, getJMapInfoTransLocal, getJMapInfoRotateLocal, getJMapInfoBool } from "./JMapInfo";
-import { computeModelMatrixSRT, computeEulerAngleRotationFromSRTMatrix } from "../MathHelpers";
+import { mat4, vec3 } from "gl-matrix";
 import { Camera } from "../Camera";
-import { LightType } from "./DrawBuffer";
-
-import { J3DModelInstance } from "../Common/JSYSTEM/J3D/J3DGraphBase";
-import * as Viewer from '../viewer';
-import { assertExists, fallback } from "../util";
-import { RailRider } from "./RailRider";
-import { BvaPlayer, BrkPlayer, BtkPlayer, BtpPlayer, XanimePlayer, BckCtrl } from "./Animation";
 import { J3DFrameCtrl, J3DFrameCtrl__UpdateFlags } from "../Common/JSYSTEM/J3D/J3DGraphAnimator";
-import { isBtkExist, isBtkPlaying, startBtk, isBrkExist, isBrkPlaying, startBrk, isBpkExist, isBpkPlaying, startBpk, isBtpExist, startBtp, isBtpPlaying, isBvaExist, isBvaPlaying, startBva, isBckExist, isBckPlaying, startBck, calcGravity, resetAllCollisionMtx, validateCollisionPartsForActor, invalidateCollisionPartsForActor, connectToScene } from "./ActorUtil";
+import { J3DModelInstance } from "../Common/JSYSTEM/J3D/J3DGraphBase";
+import { computeEulerAngleRotationFromSRTMatrix, computeModelMatrixSRT } from "../MathHelpers";
+import { assertExists, fallback } from "../util";
+import * as Viewer from '../viewer';
+import { calcGravity, connectToScene, invalidateCollisionPartsForActor, isBckExist, isBckPlaying, isBpkExist, isBpkPlaying, isBrkExist, isBrkPlaying, isBtkExist, isBtkPlaying, isBtpExist, isBtpPlaying, isBvaExist, isBvaPlaying, resetAllCollisionMtx, startBck, startBpk, startBrk, startBtk, startBtp, startBva, validateCollisionPartsForActor } from "./ActorUtil";
+import { BckCtrl, BrkPlayer, BtkPlayer, BtpPlayer, BvaPlayer, XanimePlayer } from "./Animation";
+import { Binder, CollisionParts, CollisionScaleType, createCollisionPartsFromLiveActor, invalidateCollisionParts, setCollisionMtx } from "./Collision";
+import { LightType } from "./DrawBuffer";
+import { EffectKeeper } from "./EffectSystem";
 import { HitSensor, HitSensorKeeper } from "./HitSensor";
-import { CollisionParts, CollisionScaleType, createCollisionPartsFromLiveActor, Binder, invalidateCollisionParts, setCollisionMtx } from "./Collision";
-import { StageSwitchCtrl, createStageSwitchCtrl } from "./Switch";
+import { createCsvParser, getJMapInfoBool, getJMapInfoRotateLocal, getJMapInfoTransLocal, JMapInfoIter } from "./JMapInfo";
+import { ActorLightCtrl } from "./LightData";
+import { getDeltaTimeFrames, getObjectName, ResourceHolder, SceneObjHolder, SpecialTextureType } from "./Main";
+import { MovementType, NameObj, NameObjGroup } from "./NameObj";
+import { RailRider } from "./RailRider";
 import { ShadowControllerList } from "./Shadow";
+import { Spine } from "./Spine";
+import { createStageSwitchCtrl, StageSwitchCtrl } from "./Switch";
+
 
 class ActorAnimDataInfo {
     public Name: string;
@@ -366,22 +366,102 @@ export const enum LayerId {
 }
 
 export interface ZoneAndLayer {
-    zoneId: number;
-    layerId: LayerId;
+    readonly zoneId: number;
+    readonly layerId: LayerId;
 }
 
 export const dynamicSpawnZoneAndLayer: ZoneAndLayer = { zoneId: -1, layerId: LayerId.Common };
 
 export const enum MessageType {
+    Player_Punch                             = 0x01,
+    Player_Trample                           = 0x02,
+    Player_HitDrop                           = 0x03,
+    Player_HitDropFloor                      = 0x04,
+    Player_UpperPunch                        = 0x05,
+    JetTurtleAttack                          = 0x06,
+    FireBallAttack                           = 0x08,
+    SearchlightAttack                        = 0x09,
+    FreezeAttack                             = 0x0A,
+    InvincibleAttack                         = 0x0B,
+    StarPieceAttack                          = 0x0C,
+    StarPieceReflect                         = 0x0D,
+    LockOnStarPieceShoot                     = 0x0E,
+    HitmarkEmit                              = 0x1C,
+    InvalidHit                               = 0x1D,
+    Take                                     = 0x1E,
+    Taken                                    = 0x1F,
+    Apart                                    = 0x21,
+    Throw                                    = 0x22,
+    Push                                     = 0x29,
+    Player_Kick                              = 0x2B,
+    Player_Jump                              = 0x2C,
+    TouchJump                                = 0x2D,
+    AwayJump                                 = 0x2F,
+    SpinStormRange                           = 0x33,
+    BallDashWall                             = 0x39,
+    BallDashGround                           = 0x3A,
+    _EnemyAttack_Start                       = 0x4B,
+    EnemyAttackFlipWeak                      = 0x4D,
+    EnemyAttackFlipWeakJump                  = 0x4E,
+    EnemyAttackFlipJump                      = 0x4F,
+    EnemyAttackFlip                          = 0x50,
+    EnemyAttackFlipRot                       = 0x51,
+    EnemyAttackFlipMaximum                   = 0x52,
     EnemyAttack                              = 0x53,
-    FirePressureRadiate_StartWait            = 0x68,
-    FirePressureRadiate_StartSyncWait        = 0x69,
+    EnemyAttackStrong                        = 0x54,
+    EnemyAttackMaximum                       = 0x55,
+    EnemyAttackExplosion                     = 0x56,
+    EnemyAttackFire                          = 0x58,
+    EnemyAttackFireStrong                    = 0x59,
+    EnemyAttackElectric                      = 0x5A,
+    EnemyAttackHeatBeam                      = 0x5B,
+    EnemyAttackFreeze                        = 0x5D,
+    EnemyAttackCounterSpin                   = 0x60,
+    EnemyAttackCounterHipDrop                = 0x61,
+    ToEnemyAttackBlow                        = 0x62,
+    ToEnemyAttackBlowOrTrample               = 0x63,
+    ToEnemyAttackShockWave                   = 0x64,
+    _EnemyAttack_End                         = 0x65,
+    Pressure_StartWait                       = 0x68,
+    Pressure_StartSyncWait                   = 0x69,
+    RingBeamer_SyncAttack                    = 0x6A,
+    RingBeamer_SyncInter                     = 0x6C,
+    StartDemo                                = 0x6F,
+    InhaleBlackHole                          = 0x73,
+    StartPowerStarGet                        = 0x74,
+    Item_Get                                 = 0x87,
+    Item_Pull                                = 0x89,
+    Item_Show                                = 0x8A,
+    Item_Hide                                = 0x8B,
+    Item_StartMove                           = 0x8C,
+    Item_EndMove                             = 0x8D,
+    Rush_Begin                               = 0x91,
+    AutoRush_Begin                           = 0x92,
+    Rush_Cancel                              = 0x93,
+    Rush_TakeOver                            = 0x98,
+    UpdateBaseMtx                            = 0xA1,
+    FloorTouch                               = 0xB4,
+    WallTouch                                = 0xB5,
+    CeilTouch                                = 0xB6,
     TicoRail_StartTalk                       = 0xCE,
     MapPartsRailMover_TryRotate              = 0xCB,
     MapPartsRailMover_TryRotateBetweenPoints = 0xCD,
     MapPartsRailMover_Vanish                 = 0xCF,
     SphereSelector_SelectStart               = 0xE0,
     SphereSelector_SelectEnd                 = 0xE1,
+    SphereSelector_ConfirmStart              = 0xE2,
+    SphereSelector_ConfirmCancel             = 0xE3,
+    SphereSelector_Confirmed                 = 0xE4,
+    SphereSelector_TargetSelected            = 0xE5,
+    TutorialStart                            = 0xE6,
+    TutorialNext                             = 0xE7,
+    TutorialPrev                             = 0xE8,
+    TutorialPass                             = 0xE9,
+    TutorialOmit                             = 0xEB,
+    RaceReady                                = 0xEC,
+    RaceStart                                = 0xED,
+    RaceReset                                = 0xEF,
+    TouchPlantItem                           = 0xF3,
 
     NoclipButton_Click                       = 0x200,
 }
@@ -435,7 +515,7 @@ export class LiveActor<TNerve extends number = number> extends NameObj {
         // Do nothing by default.
     }
 
-    public getSensor(name: string): HitSensor | null {
+    public getSensor(name: string | null): HitSensor | null {
         if (this.hitSensorKeeper !== null)
             return this.hitSensorKeeper.getSensor(name);
         else
@@ -468,7 +548,7 @@ export class LiveActor<TNerve extends number = number> extends NameObj {
     }
 
     public makeActorDead(sceneObjHolder: SceneObjHolder): void {
-        vec3.set(this.velocity, 0, 0, 0);
+        vec3.zero(this.velocity);
         if (this.hitSensorKeeper !== null) {
             this.hitSensorKeeper.clear();
             this.hitSensorKeeper.invalidateBySystem();
@@ -516,7 +596,7 @@ export class LiveActor<TNerve extends number = number> extends NameObj {
     }
 
     protected offScenario(sceneObjHolder: SceneObjHolder): void {
-        vec3.set(this.velocity, 0, 0, 0);
+        // vec3.zero(this.velocity);
         if (this.hitSensorKeeper !== null) {
             this.hitSensorKeeper.clear();
             this.hitSensorKeeper.invalidateBySystem();
@@ -551,8 +631,6 @@ export class LiveActor<TNerve extends number = number> extends NameObj {
 
         // Compute the joint matrices an initial time in case anything wants to rely on them...
         this.modelManager.modelInstance.calcAnim();
-
-        // TODO(jstpierre): Seems like it's possible to have a secondary file for BCK animations?
         this.actorAnimKeeper = ActorAnimKeeper.tryCreate(this);
     }
 
@@ -748,7 +826,7 @@ export class LiveActor<TNerve extends number = number> extends NameObj {
                 this.initWaitPhase -= deltaTimeFrames;
             } else {
                 this.spine.changeNerve();
-                this.updateSpine(sceneObjHolder, this.getCurrentNerve(), deltaTimeFrames);
+                this.updateSpine(sceneObjHolder, this.spine.getCurrentNerve(), deltaTimeFrames);
                 this.spine.updateTick(deltaTimeFrames);
                 this.spine.changeNerve();
             }
@@ -826,8 +904,8 @@ export class LiveActorGroup<T extends LiveActor> extends NameObjGroup<T> {
 
 export class MsgSharedGroup<T extends LiveActor> extends LiveActorGroup<T> {
     private pendingMessageType: MessageType | null = null;
-    private pendingHitSensor: HitSensor | null = null;
-    private pendingSensorName: string | null = null;
+    private pendingSendSensor: HitSensor | null = null;
+    private pendingRecvSensorName: string | null = null;
 
     constructor(sceneObjHolder: SceneObjHolder, public zoneId: number, public infoId: number, name: string, maxCount: number) {
         super(sceneObjHolder, name, maxCount);
@@ -840,20 +918,20 @@ export class MsgSharedGroup<T extends LiveActor> extends LiveActorGroup<T> {
         if (this.pendingMessageType !== null) {
             for (let i = 0; i < this.objArray.length; i++) {
                 const actor = this.objArray[i];
-                const sensor = actor.getSensor(this.pendingSensorName!)!;
-                sensor.receiveMessage(sceneObjHolder, this.pendingMessageType, this.pendingHitSensor!);
+                const sensor = actor.getSensor(this.pendingRecvSensorName!)!;
+                sensor.receiveMessage(sceneObjHolder, this.pendingMessageType, this.pendingSendSensor!);
             }
 
             this.pendingMessageType = null;
-            this.pendingHitSensor = null;
-            this.pendingSensorName = null;
+            this.pendingSendSensor = null;
+            this.pendingRecvSensorName = null;
         }
     }
 
-    public sendMsgToGroupMember(messageType: MessageType, hitSensor: HitSensor, sensorName: string): void {
+    public sendMsgToGroupMember(messageType: MessageType, sendSensor: HitSensor, recvSensorName: string): void {
         this.pendingMessageType = messageType;
-        this.pendingHitSensor = hitSensor;
-        this.pendingSensorName = sensorName;
+        this.pendingSendSensor = sendSensor;
+        this.pendingRecvSensorName = recvSensorName;
     }
 }
 
@@ -919,4 +997,8 @@ export class LiveActorGroupArray extends NameObj {
         group.registerActor(actor);
         return group;
     }
+}
+
+export function isMsgTypeEnemyAttack(msgType: MessageType): boolean {
+    return msgType > MessageType._EnemyAttack_Start && msgType < MessageType._EnemyAttack_End;
 }

@@ -5,8 +5,8 @@ import { AnimationTrack, AnimationKeyframe, LoopMode, VAF1, TRK1, TRK1AnimationE
 import { assertExists } from '../../../util';
 import { Color } from '../../../Color';
 import { J3DModelInstance, JointMatrixCalcNoAnm, MaterialInstance, J3DModelData, ShapeInstanceState } from './J3DGraphBase';
-import { mat4, ReadonlyVec3, vec3 } from 'gl-matrix';
-import { computeModelMatrixSRT } from '../../../MathHelpers';
+import { mat4, quat, ReadonlyVec3, vec3 } from 'gl-matrix';
+import { quatFromEulerRadians, setMatrixTranslation } from '../../../MathHelpers';
 import { getPointHermite } from '../../../Spline';
 
 function hermiteInterpolate(k0: AnimationKeyframe, k1: AnimationKeyframe, frame: number): number {
@@ -74,6 +74,27 @@ export class J3DFrameCtrl {
         this.currentTimeInFrames = 0.0;
     }
 
+    public applyLoopMode(timeInFrames: number): number {
+        if (this.loopMode === LoopMode.ONCE) {
+            if (timeInFrames > this.endFrame)
+                return this.endFrame - 0.001;
+        } else if (this.loopMode === LoopMode.ONCE_AND_RESET) {
+            if (timeInFrames >= this.endFrame)
+                return this.startFrame;
+        } else if (this.loopMode === LoopMode.REPEAT) {
+            if (timeInFrames >= this.endFrame)
+                return timeInFrames - (this.endFrame - this.repeatStartFrame);
+        } else if (this.loopMode === LoopMode.MIRRORED_ONCE || this.loopMode === LoopMode.MIRRORED_REPEAT) {
+            if (timeInFrames >= this.endFrame - 1.0)
+                return this.endFrame - (timeInFrames - this.endFrame);
+
+            if (timeInFrames < this.startFrame)
+                return this.startFrame - (timeInFrames - this.startFrame);
+        }
+
+        return timeInFrames;
+    }
+
     public update(deltaTimeFrames: number): void {
         // TODO(jstpierre): Figure out why SurfingRaceSubGate is broken in Loopdeswoop Galaxy...
         // This isn't correct.
@@ -135,6 +156,10 @@ export class J3DFrameCtrl {
             // TODO(jstpierre): RE this.
             return false;
         }
+    }
+
+    public hasStopped(): boolean {
+        return this.currentTimeInFrames === 0 || !!(this.updateFlags & J3DFrameCtrl__UpdateFlags.HasStopped);
     }
 }
 
@@ -314,25 +339,36 @@ export function calcJointMatrixMayaSSC(dst: mat4, parentScale: ReadonlyVec3): vo
 }
 
 export function calcJointMatrixFromTransform(dst: mat4, transform: JointTransformInfo, loadFlags: J3DLoadFlags, jnt1: Joint, shapeInstanceState: ShapeInstanceState): void {
-    computeModelMatrixSRT(dst,
-        transform.scale[0], transform.scale[1], transform.scale[2],
-        transform.rotation[0], transform.rotation[1], transform.rotation[2],
-        transform.translation[0], transform.translation[1], transform.translation[2]);
+    mat4.fromQuat(dst, transform.rotation);
+    setMatrixTranslation(dst, transform.translation);
+    mat4.scale(dst, dst, transform.scale);
 
     const matrixCalcFlag = (loadFlags & J3DLoadFlags.ScalingRule_Mask);
     if (matrixCalcFlag === J3DLoadFlags.ScalingRule_Maya && !!(jnt1.calcFlags & 0x01))
         calcJointMatrixMayaSSC(dst, shapeInstanceState.parentScale);
 }
 
-export function calcJointAnimationTransform(dst: JointTransformInfo, entry: ANK1JointAnimationEntry, animFrame: number): void {
+const scratchQuat = quat.create();
+export function calcJointAnimationTransform(dst: JointTransformInfo, entry: ANK1JointAnimationEntry, animFrame: number, animFrame1: number): void {
     dst.scale[0] = sampleAnimationData(entry.scaleX, animFrame);
     dst.scale[1] = sampleAnimationData(entry.scaleY, animFrame);
     dst.scale[2] = sampleAnimationData(entry.scaleZ, animFrame);
-    // Use whole frames only for rotation -- this prevents bad tangents from getting in here that were never
-    // intended to be seen, especially at the looping edges of animations.
-    dst.rotation[0] = sampleAnimationData(entry.rotationX, (animFrame | 0));
-    dst.rotation[1] = sampleAnimationData(entry.rotationY, (animFrame | 0));
-    dst.rotation[2] = sampleAnimationData(entry.rotationZ, (animFrame | 0));
+
+    const a0 = animFrame | 0;
+    const r0x = sampleAnimationData(entry.rotationX, a0);
+    const r0y = sampleAnimationData(entry.rotationY, a0);
+    const r0z = sampleAnimationData(entry.rotationZ, a0);
+    quatFromEulerRadians(dst.rotation, r0x, r0y, r0z);
+
+    if (a0 !== animFrame) {
+        const a1 = animFrame1 | 0;
+        const r1x = sampleAnimationData(entry.rotationX, a1);
+        const r1y = sampleAnimationData(entry.rotationY, a1);
+        const r1z = sampleAnimationData(entry.rotationZ, a1);
+        quatFromEulerRadians(scratchQuat, r1x, r1y, r1z);
+        quat.slerp(dst.rotation, dst.rotation, scratchQuat, animFrame - a0);
+    }
+
     dst.translation[0] = sampleAnimationData(entry.translationX, animFrame);
     dst.translation[1] = sampleAnimationData(entry.translationY, animFrame);
     dst.translation[2] = sampleAnimationData(entry.translationZ, animFrame);
@@ -343,6 +379,7 @@ export class J3DJointMatrixAnm {
 
     public set(frameCtrl: J3DFrameCtrl, ank1: ANK1): void {
         this.frameCtrl = frameCtrl;
+        this.ank1 = ank1;
     }
 
     public calcJointMatrix(dst: mat4, modelData: J3DModelData, i: number, shapeInstanceState: ShapeInstanceState): void {
@@ -352,7 +389,7 @@ export class J3DJointMatrixAnm {
         let transform: JointTransformInfo;
         if (entry !== undefined) {
             const animFrame = this.frameCtrl.currentTimeInFrames;
-            calcJointAnimationTransform(scratchTransform, entry, animFrame);
+            calcJointAnimationTransform(scratchTransform, entry, animFrame, this.frameCtrl.applyLoopMode(animFrame + 1));
             transform = scratchTransform;
         } else {
             transform = jnt1.transform;

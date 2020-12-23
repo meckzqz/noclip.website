@@ -93,7 +93,7 @@ export function computeModelMatrixR(dst: mat4, rotationX: number, rotationY: num
     const sinZ = Math.sin(rotationZ), cosZ = Math.cos(rotationZ);
 
     dst[0] =  (cosY * cosZ);
-    dst[1] =  (sinZ * cosY);
+    dst[1] =  (cosY * sinZ);
     dst[2] =  (-sinY);
     dst[3] =  0.0;
 
@@ -319,7 +319,7 @@ export function texEnvMtx(dst: mat4, scaleS: number, scaleT: number, transS: num
     dst[15] = 9999.0;
 }
 
-export function computeRotationMatrixFromSRTMatrix(dst: mat4, m: mat4): void {
+export function computeRotationMatrixFromSRTMatrix(dst: mat4, m: ReadonlyMat4): void {
     const mx = 1 / Math.hypot(m[0], m[4], m[8]);
     const my = 1 / Math.hypot(m[1], m[5], m[9]);
     const mz = 1 / Math.hypot(m[2], m[6], m[10]);
@@ -335,6 +335,24 @@ export function computeRotationMatrixFromSRTMatrix(dst: mat4, m: mat4): void {
     dst[12] = 0;
     dst[13] = 0;
     dst[14] = 0;
+}
+
+export function computeMatrixWithoutScale(dst: mat4, m: ReadonlyMat4): void {
+    const mx = 1 / Math.hypot(m[0], m[4], m[8]);
+    const my = 1 / Math.hypot(m[1], m[5], m[9]);
+    const mz = 1 / Math.hypot(m[2], m[6], m[10]);
+    dst[0] = m[0] * mx;
+    dst[4] = m[4] * mx;
+    dst[8] = m[8] * mx;
+    dst[1] = m[1] * my;
+    dst[5] = m[5] * my;
+    dst[9] = m[9] * my;
+    dst[2] = m[2] * mz;
+    dst[6] = m[6] * mz;
+    dst[10] = m[10] * mz;
+    dst[12] = m[12];
+    dst[13] = m[13];
+    dst[14] = m[14];
 }
 
 export function computeMatrixWithoutTranslation(dst: mat4, m: ReadonlyMat4): void {
@@ -436,7 +454,7 @@ export function computeProjectionMatrixFromCuboid(m: mat4, left: number, right: 
     m[15] = 1;
 }
 
-export function computeEulerAngleRotationFromSRTMatrix(dst: vec3, m: mat4): void {
+export function computeEulerAngleRotationFromSRTMatrix(dst: vec3, m: ReadonlyMat4): void {
     // "Euler Angle Conversion", Ken Shoemake, Graphics Gems IV. http://www.gregslabaugh.net/publications/euler.pdf
 
     if (compareEpsilon(m[2], 1.0)) {
@@ -581,7 +599,7 @@ export function float32AsBits(x: number): number {
 /**
  * Reflects a given vector
  */
-export function reflectVec3(dst: vec3, source: vec3, normal: vec3): void {
+export function reflectVec3(dst: vec3, source: ReadonlyVec3, normal: ReadonlyVec3): void {
     const dot = -2.0 * vec3.dot(source, normal);
     vec3.scaleAndAdd(dst, source, normal, dot);
 }
@@ -595,4 +613,8 @@ export function vec3QuantizeMajorAxis(dst: vec3, m: vec3): void {
         vec3.set(dst, 0, speed * Math.sign(y), 0);
     else if (Math.abs(z) > Math.abs(y) && Math.abs(z) > Math.abs(x))
         vec3.set(dst, 0, 0, speed * Math.sign(z));
+}
+
+export function vec3SetAll(dst: vec3, v: number): void {
+    vec3.set(dst, v, v, v);
 }

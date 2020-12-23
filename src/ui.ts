@@ -10,12 +10,12 @@ import { SaveManager, GlobalSaveManager } from "./SaveManager";
 import { RenderStatistics } from './RenderStatistics';
 import { GlobalGrabManager } from './GrabManager';
 import { clamp } from './MathHelpers';
-
-// @ts-ignore
-import logoURL from './assets/logo.png';
 import { DebugFloaterHolder, FloatingPanel } from './DebugFloaters';
 import { LinearEaseType, Keyframe, CameraAnimationManager } from './CameraAnimationManager';
 import { DraggingMode } from './InputManager';
+
+// @ts-ignore
+import logoURL from './assets/logo.png';
 
 export const HIGHLIGHT_COLOR = 'rgb(210, 30, 30)';
 export const COOL_BLUE_COLOR = 'rgb(20, 105, 215)';
@@ -1003,7 +1003,7 @@ class SceneSelect extends Panel {
                         visible = true;
 
                     // If name matches, then we are explicitly visible.
-                    if (!visible && matchRegExps(n, item.name))
+                    if (!visible && (matchRegExps(n, item.name) || (item.altName && matchRegExps(n, item.altName))))
                         visible = true;
 
                     if (item === this.selectedSceneGroup)
@@ -1158,21 +1158,30 @@ export interface TextureListHolder {
 }
 
 class FrameDebouncer {
-    private queued: boolean = false;
+    private timeoutId: number | null = null;
     public callback: (() => void) | null = null;
+
+    constructor(public timeout = 100) {
+    }
 
     private onframe = (): void => {
         if (this.callback !== null)
             this.callback();
-        this.queued = false;
+        this.timeoutId = null;
     }
 
     public trigger(): void {
-        if (this.queued)
-            return;
+        if (this.timeoutId !== null)
+            this.clear();
         if (this.callback !== null)
-            window.requestAnimationFrame(this.onframe);
-        this.queued = true;
+            this.timeoutId = setTimeout(this.onframe, this.timeout);
+    }
+
+    public clear() {
+        if (this.timeoutId === null)
+            return;
+        clearTimeout(this.timeoutId);
+        this.timeoutId = null;
     }
 }
 
@@ -1409,8 +1418,10 @@ export class Slider implements Widget {
         return +this.sliderInput.value;
     }
 
-    public setValue(v: number): void {
+    public setValue(v: number, triggerCallback: boolean = false): void {
         this.sliderInput.value = '' + v;
+        if (triggerCallback)
+            this.onInput();
     }
 
     public getT(): number {
@@ -1551,7 +1562,7 @@ class ViewerSettings extends Panel {
         setElementHighlighted(this.cameraControllerOrbit, cameraControllerClass === OrbitCameraController);
         setElementHighlighted(this.cameraControllerOrtho, cameraControllerClass === OrthoCameraController);
 
-        setElementVisible(this.fovSlider.elem, cameraControllerClass === FPSCameraController);
+        setElementVisible(this.fovSlider.elem, cameraControllerClass !== OrthoCameraController);
     }
 
     private invertYChanged(saveManager: SaveManager, key: string): void {

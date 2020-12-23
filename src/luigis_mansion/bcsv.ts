@@ -1,13 +1,9 @@
 
 import ArrayBufferSlice from "../ArrayBufferSlice";
-import { readString, decodeString } from "../util";
+import { readString } from "../util";
 
 function readStringSJIS(buffer: ArrayBufferSlice, offs: number): string {
-    const view = buffer.createDataView(offs);
-    let i = 0;
-    while (view.getUint8(i) !== 0)
-        i++;
-    return decodeString(buffer.subarray(offs, i), 'sjis');
+    return readString(buffer, offs, -1, true, 'sjis');
 }
 
 // Luigi's Mansion
@@ -52,7 +48,7 @@ const nameTable = [
     'PlanetName', 'LowFlag', 'MiddleFlag', 'BloomFlag', 'WaterFlag', 'WaterFlag', 'IndirectFlag',
     // Placement
     'Obj_arg0', 'Obj_arg1', 'Obj_arg2', 'Obj_arg3', 'Obj_arg4', 'Obj_arg5', 'Obj_arg6', 'Obj_arg7',
-    'SW_APPEAR', 'SW_A', 'SW_B', 'SW_SLEEP',
+    'SW_APPEAR', 'SW_DEAD', 'SW_A', 'SW_B', 'SW_SLEEP',
     'CommonPath_ID', 'FollowId', 'ClippingGroupId', 'GroupId', 'DemoGroupId', 'MapParts_ID', 'Obj_ID', 'ChildObjId',
     'RotateSpeed', 'RotateAngle', 'RotateAxis', 'RotateAccelType', 'RotateStopTime', 'RotateType',
     // Gravity
@@ -76,6 +72,8 @@ const nameTable = [
     'PlanetAmbientR', 'PlanetAmbientG', 'PlanetAmbientB', 'PlanetAmbientA', 'PlanetAlpha2',
     // Shadow
     'Name', 'GroupName', 'Joint', 'DropOffsetX', 'DropOffsetY', 'DropOffsetZ', 'DropStart', 'DropLength', 'SyncShow', 'FollowScale', 'Collision', 'Gravity',
+    // GeneralPos
+    'PosName',
 ];
 
 const hashLookup = new Map<number, string>();

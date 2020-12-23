@@ -24,7 +24,7 @@ import { calcJointMatrixFromTransform } from './J3DGraphAnimator';
 import { LoadedVertexDraw } from '../../../gx/gx_displaylist';
 
 export class ShapeInstanceState {
-    // One matrix for each joint, which transform into world space.
+    // One matrix for each joint, which transform into the parent joint's space.
     public jointToParentMatrixArray: mat4[] = [];
 
     // One matrix for each joint, which transform into world space.
@@ -380,17 +380,16 @@ export class MaterialInstance {
     public sortKey: number = 0;
     public colorOverrides: (Color | null)[] = nArray(ColorKind.COUNT, () => null);
     public fogBlock = new GX_Material.FogBlock();
-    public usePnMtxIdx?: boolean = undefined;
 
     constructor(materialData: MaterialData, public shapeInstances: ShapeInstance[], materialHacks?: GX_Material.GXMaterialHacks) {
-        this.usePnMtxIdx = shapeInstancesUsePnMtxIdx(this.shapeInstances);
         this.setMaterialData(materialData, materialHacks);
     }
 
     public setMaterialData(materialData: MaterialData, materialHacks?: GX_Material.GXMaterialHacks): void {
         this.materialData = materialData;
         const material = this.materialData.material;
-        material.gxMaterial.usePnMtxIdx = this.usePnMtxIdx;
+        if (material.gxMaterial.usePnMtxIdx === undefined)
+            material.gxMaterial.usePnMtxIdx = shapeInstancesUsePnMtxIdx(this.shapeInstances);
         this.materialHelper = new GXMaterialHelperGfx(material.gxMaterial, materialHacks);
         this.name = material.name;
         let layer = !material.gxMaterial.ropInfo.depthTest ? GfxRendererLayer.BACKGROUND : material.translucent ? GfxRendererLayer.TRANSLUCENT : GfxRendererLayer.OPAQUE;
@@ -1153,10 +1152,7 @@ export class J3DModelInstance {
      *
      * It is currently not possible to specify a color override per-material.
      *
-     * By default, the alpha value in {@param color} is not used. Set {@param useAlpha}
-     * to true to obey the alpha color override.
-     *
-     * To unset a color override, pass {@constant undefined} as for {@param color}.
+     * To unset a color override, pass {@constant null} as for {@param color}.
      */
     public setColorOverride(colorKind: ColorKind, color: Color | null): void {
         for (let i = 0; i < this.materialInstances.length; i++)
@@ -1266,8 +1262,6 @@ export class J3DModelInstance {
     private calcJointAnimRecurse(node: JointTreeNode, parentNode: JointTreeNode | null): void {
         const shapeInstanceState = this.shapeInstanceState;
 
-        // Our root node is a dummy node that houses a special model matrix.
-        // TODO(jstpierre): Remove this.
         if (parentNode !== null) {
             const jointIndex = node.jointIndex;
             assert(jointIndex >= 0);

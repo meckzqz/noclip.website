@@ -53,7 +53,7 @@ import * as Scenes_SuperSmashBrosMelee from './SuperSmashBrosMelee/Scenes_SuperS
 import * as Scenes_PokemonSnap from './PokemonSnap/scenes';
 import * as Scenes_MetroidPrimeHunters from './MetroidPrimeHunters/Scenes_MetroidPrimeHunters';
 import * as Scenes_PokemonPlatinum from './nns_g3d/Scenes_PokemonPlatinum';
-import * as Scenes_PokemonSoulSilver from './nns_g3d/Scenes_PokemonSoulSilver';
+import * as Scenes_PokemonHGSS from './nns_g3d/Scenes_PokemonHGSS';
 import * as Scenes_WiiUTransferTool from './rres/Scenes_WiiUTransferTool';
 import * as Scenes_GoldenEye007 from './GoldenEye007/Scenes_GoldenEye007';
 import * as Scenes_BanjoTooie from './BanjoTooie/scenes';
@@ -61,7 +61,9 @@ import * as Scenes_SunshineWater from './InteractiveExamples/SunshineWater';
 import * as Scenes_HalfLife2 from './SourceEngine/Scenes_HalfLife2';
 import * as Scenes_TeamFortress2 from './SourceEngine/Scenes_TeamFortress2';
 import * as Scenes_Portal from './SourceEngine/Scenes_Portal';
+import * as Scenes_BeetleAdventureRacing from './BeetleAdventureRacing/Scenes';
 import * as Scenes_TheWitness from './TheWitness/Scenes_TheWitness';
+import * as Scenes_FFX from './FinalFantasyX/scenes';
 
 import { DroppedFileSceneDesc, traverseFileSystemDataTransfer } from './Scenes_FileDrops';
 
@@ -80,7 +82,7 @@ import * as Sentry from '@sentry/browser';
 import { GIT_REVISION, IS_DEVELOPMENT } from './BuildVersion';
 import { SceneDesc, SceneGroup, SceneContext, getSceneDescs, Destroyable } from './SceneBase';
 import { prepareFrameDebugOverlayCanvas2D } from './DebugJunk';
-import { downloadBlob, downloadBuffer } from './DownloadUtils';
+import { downloadBlob } from './DownloadUtils';
 import { DataShare } from './DataShare';
 import InputManager from './InputManager';
 import { WebXRContext } from './WebXR';
@@ -132,12 +134,14 @@ const sceneGroups = [
     Scenes_Portal.sceneGroup,
     "Experimental",
     Scenes_BanjoTooie.sceneGroup,
+    Scenes_BeetleAdventureRacing.sceneGroup,
     Scenes_DarkSouls.sceneGroup,
     Scenes_DarkSoulsCollision.sceneGroup,
     Scenes_DonkeyKong64.sceneGroup,
     Scenes_DonkeyKongCountryReturns.sceneGroup,
     Scenes_Elebits.sceneGroup,
     Scenes_Fez.sceneGroup,
+    Scenes_FFX.sceneGroup,
     Scenes_GTA.sceneGroup.vc,
     Scenes_GTA.sceneGroup.sa,
     Scenes_LuigisMansion3D.sceneGroup,
@@ -145,7 +149,7 @@ const sceneGroups = [
     Scenes_MetroidPrime.sceneGroupMP3,
     Scenes_MetroidPrimeHunters.sceneGroup,
     Scenes_PokemonPlatinum.sceneGroup,
-    Scenes_PokemonSoulSilver.sceneGroup,
+    Scenes_PokemonHGSS.sceneGroup,
     Scenes_Psychonauts.sceneGroup,
     Scenes_SonicColors.sceneGroup,
     Scenes_StarFoxAdventures.sceneGroup,

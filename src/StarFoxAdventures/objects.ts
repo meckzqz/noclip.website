@@ -3,8 +3,10 @@ import { DataFetcher } from '../DataFetcher';
 import { GfxDevice } from '../gfx/platform/GfxPlatform';
 import { GfxRenderInstManager } from "../gfx/render/GfxRenderer";
 import * as GX_Material from '../gx/gx_material';
+import * as GX from '../gx/gx_enum';
 import { getDebugOverlayCanvas2D, drawWorldSpacePoint, drawWorldSpaceLine } from "../DebugJunk";
 
+import { StandardMaterial } from './materials';
 import { ModelInstance, ModelRenderContext } from './models';
 import { dataSubarray, angle16ToRads, readVec3, mat4FromSRT, readUint32, readUint16 } from './util';
 import { Anim, interpolateKeyframes, Keyframe, applyKeyframeToModel } from './animation';
@@ -12,6 +14,8 @@ import { World } from './world';
 import { getRandomInt } from '../SuperMarioGalaxy/ActorUtil';
 import { SceneRenderContext } from './render';
 import { colorNewFromRGBA } from '../Color';
+import { GXMaterialBuilder } from '../gx/GXMaterialBuilder';
+import { computeViewMatrix } from '../Camera';
 
 // An SFAClass holds common data and logic for one or more ObjectTypes.
 // An ObjectType serves as a template to spawn ObjectInstances.
@@ -22,34 +26,33 @@ interface SFAClass {
     unmount?: (obj: ObjectInstance, world: World) => void;
 }
 
-function commonSetup(obj: ObjectInstance, data: DataView, yawOffs?: number, pitchOffs?: number, rollOffs?: number) {
-    if (yawOffs !== undefined) {
+function commonSetup(obj: ObjectInstance, data: DataView, yawOffs?: number, pitchOffs?: number, rollOffs?: number, animSpeed?: number) {
+    if (yawOffs !== undefined)
         obj.yaw = angle16ToRads(data.getInt8(yawOffs) << 8);
-    }
-    if (pitchOffs !== undefined) {
+    if (pitchOffs !== undefined)
         obj.pitch = angle16ToRads(data.getInt8(pitchOffs) << 8);
-    }
-    if (rollOffs !== undefined) {
+    if (rollOffs !== undefined)
         obj.roll = angle16ToRads(data.getInt8(rollOffs) << 8);
-    }
+    if (animSpeed !== undefined)
+        obj.animSpeed = animSpeed;
 }
 
-function commonClass(yawOffs?: number, pitchOffs?: number, rollOffs?: number): SFAClass {
+function commonClass(yawOffs?: number, pitchOffs?: number, rollOffs?: number, animSpeed?: number): SFAClass {
     return {
         setup: (obj: ObjectInstance, data: DataView) => {
-            commonSetup(obj, data, yawOffs, pitchOffs, rollOffs);
+            commonSetup(obj, data, yawOffs, pitchOffs, rollOffs, animSpeed);
         },
     };
 }
 
-function decorClass(): SFAClass {
+function decorClass(animSpeed: number = 1.0): SFAClass {
     return {
         setup: (obj: ObjectInstance, data: DataView) => {
             commonSetup(obj, data, 0x1a, 0x19, 0x18);
+            obj.animSpeed = animSpeed;
             const scaleParam = data.getUint8(0x1b);
-            if (scaleParam !== 0) {
+            if (scaleParam !== 0)
                 obj.scale *= scaleParam / 255;
-            }
         },
     };
 }
@@ -106,6 +109,7 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
         },
     },
     [240]: commonClass(0x18),
+    [244]: commonClass(0x18), // VFP_RoundDo
     [248]: commonClass(),
     [249]: { // ProjectileS
         setup: (obj: ObjectInstance, data: DataView) => {
@@ -125,13 +129,14 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
         },
     },
     [251]: commonClass(0x18),
-    [254]: commonClass(0x1d), // MagicPlant
+    [254]: commonClass(0x1d, undefined, undefined, 0.03), // MagicPlant
     [255]: { // MagicDustMi
         setup: (obj: ObjectInstance, data: DataView) => {
             obj.setModelNum(data.getInt8(0x26));
         },
     },
     [256]: commonClass(0x1a),
+    [258]: commonClass(), // StayPoint
     [259]: { // CurveFish
         setup: (obj: ObjectInstance, data: DataView) => {
             obj.scale *= data.getUint8(0x18) / 100;
@@ -205,7 +210,8 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
     },
     [298]: { // WM_krazoast
         setup: (obj: ObjectInstance, data: DataView) => {
-            if (obj.objType.typeNum === 888 || obj.objType.typeNum === 889) {
+            if (obj.objType.typeNum === 482) {
+            } else if (obj.objType.typeNum === 888 || obj.objType.typeNum === 889) {
                 commonSetup(obj, data, 0x18);
             }
         },
@@ -359,9 +365,8 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
         setup: (obj: ObjectInstance, data: DataView) => {
             commonSetup(obj, data, 0x1f);
             const scaleParam = data.getUint8(0x21);
-            if (scaleParam !== 0) {
+            if (scaleParam !== 0)
                 obj.scale *= scaleParam / 64;
-            }
         },
     },
     [385]: { // MMP_trenchF
@@ -405,12 +410,12 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
         },
     },
     [423]: commonClass(),
-    [424]: commonClass(),
+    [424]: commonClass(undefined, undefined, undefined, 0.008), // SH_killermu (Note: This enemy has different anim speeds depending on current state)
     [425]: commonClass(0x1f),
     [427]: commonClass(0x18),
-    [429]: { // ThornTail
+    [429]: { // SH_thorntai
         setup: (obj: ObjectInstance, data: DataView) => {
-            commonSetup(obj, data, 0x19);
+            commonSetup(obj, data, 0x19, undefined, undefined, 0.006);
             obj.scale *= data.getUint16(0x1c) / 1000;
         },
     },
@@ -503,9 +508,8 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
     },
     [502]: {
         setup: (obj: ObjectInstance, data: DataView) => {
-            if (obj.objType.typeNum !== 0x803) {
+            if (obj.objType.typeNum !== 0x803)
                 commonSetup(obj, data, 0x18);
-            }
         },
     },
     [509]: commonClass(),
@@ -515,11 +519,10 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
         setup: (obj: ObjectInstance, data: DataView) => {
             obj.yaw = angle16ToRads((data.getUint8(0x18) & 0x3f) << 10);
             const objScale = data.getInt16(0x1a);
-            if (objScale < 1) {
+            if (objScale < 1)
                 obj.scale = 0.1;
-            } else {
+            else
                 obj.scale = objScale / 8192;
-            }
         },
     },
     [521]: { // WM_LevelCon
@@ -545,16 +548,31 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
             }
         },
     },
+    [541]: commonClass(0x18), // VFPLift2
+    [542]: commonClass(0x18), // VFP_Block1
+    [543]: commonClass(0x18), // VFPLavaBloc
+    [544]: { // VFP_DoorSwi
+        setup: (obj: ObjectInstance, data: DataView) => {
+            commonSetup(obj, data, 0x18, 0x19);
+            // Roll is 16 bits
+            obj.roll = angle16ToRads(data.getInt16(0x1c));
+        },
+    },
     [549]: commonClass(),
     [550]: { // VFP_lavapoo
         setup: (obj: ObjectInstance, data: DataView) => {
             let scaleParam = data.getInt16(0x1a);
-            if (scaleParam === 0) {
+            if (scaleParam === 0)
                 scaleParam = 500;
-            }
             obj.scale = 1 / (scaleParam / getRandomInt(600, 1000));
         },
     },
+    [551]: { // VFP_lavasta
+        setup: (obj: ObjectInstance, data: DataView) => {
+            obj.position[1] += data.getInt16(0x1a);
+        },
+    },
+    [552]: commonClass(0x18), // VFPSpPl
     [576]: commonClass(),
     [579]: commonClass(0x18),
     [597]: commonClass(0x18),
@@ -576,9 +594,8 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
     [619]: commonClass(0x18),
     [620]: {
         setup: (obj: ObjectInstance, data: DataView) => {
-            if (obj.objType.typeNum !== 0x86a && obj.objType.typeNum !== 0x86b) {
+            if (obj.objType.typeNum !== 0x86a && obj.objType.typeNum !== 0x86b)
                 commonSetup(obj, data, 0x18);
-            }
         },
     },
     [622]: commonClass(),
@@ -588,9 +605,8 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
             commonSetup(obj, data, 0x18, 0x19);
             obj.roll = 0;
             const scaleParam = data.getInt16(0x1c);
-            if (scaleParam != 0) {
+            if (scaleParam != 0)
                 obj.scale *= 0.1 * scaleParam;
-            }
         },
     },
     [641]: commonClass(0x18),
@@ -644,7 +660,27 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
     [660]: commonClass(0x18),
     [661]: templeClass(),
     [662]: templeClass(),
-    [663]: templeClass(),
+    [663]: { // WCTempleBri
+        setup: (obj: ObjectInstance, data: DataView) => {
+            commonSetup(obj, data, 0x18);
+            obj.setModelNum(data.getInt8(0x19));
+            // Caution: This will modify the materials for all instances of the model.
+            // TODO: find a cleaner way to do this
+            const mats = obj.modelInst!.getMaterials();
+            for (let i = 0; i < mats.length; i++) {
+                const mat = mats[i];
+                if (mat !== undefined && mat instanceof StandardMaterial) {
+                    mat.setBlendOverride({
+                        setup: (mb: GXMaterialBuilder) => {
+                            mb.setBlendMode(GX.BlendMode.BLEND, GX.BlendFactor.SRCALPHA, GX.BlendFactor.ONE);
+                            mb.setZMode(true, GX.CompareType.LEQUAL, false);
+                        },
+                    });
+                    mat.rebuild();
+                }
+            }
+        },
+    },
     [664]: { // WCFloorTile
         setup: (obj: ObjectInstance, data: DataView) => {
             obj.yaw = angle16ToRads(-0x4000);
@@ -671,11 +707,10 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
             commonSetup(obj, data, 0x18, 0x19);
 
             const spotFunc = data.getUint8(0x21); // TODO: this value is passed to GXInitSpotLight
-            if (spotFunc === 0) {
+            if (spotFunc === 0)
                 obj.setModelNum(0);
-            } else {
+            else
                 obj.setModelNum(1);
-            }
 
             // Distance attenuation values are calculated by GXInitLightDistAttn with GX_DA_MEDIUM mode
             // TODO: Some types of light use other formulae
@@ -716,13 +751,32 @@ const SFA_CLASSES: {[num: number]: SFAClass} = {
             // })
         },
     },
-    [685]: decorClass(),
+    [685]: decorClass(0.001),
     [686]: decorClass(),
-    [687]: decorClass(),
+    [687]: decorClass(0.0025),
     [688]: decorClass(),
     [689]: commonClass(0x1a, 0x19, 0x18),
     [690]: commonClass(0x1a, 0x19, 0x18),
-    [691]: commonClass(),
+    [691]: { // SkyVortS
+        setup: (obj: ObjectInstance, data: DataView) => {
+            commonSetup(obj, data);
+            // Caution: This will modify the materials for all instances of the model.
+            // TODO: find a cleaner way to do this
+            const mats = obj.modelInst!.getMaterials();
+            for (let i = 0; i < mats.length; i++) {
+                const mat = mats[i];
+                if (mat !== undefined && mat instanceof StandardMaterial) {
+                    mat.setBlendOverride({
+                        setup: (mb: GXMaterialBuilder) => {
+                            mb.setBlendMode(GX.BlendMode.BLEND, GX.BlendFactor.SRCALPHA, GX.BlendFactor.ONE);
+                            mb.setZMode(true, GX.CompareType.LEQUAL, false);
+                        },
+                    });
+                    mat.rebuild();
+                }
+            }
+        },
+    },
     [693]: commonClass(),
     [694]: { // CNThitObjec
         setup: (obj: ObjectInstance, data: DataView) => {
@@ -754,6 +808,8 @@ export class ObjectType {
             offs++;
         }
 
+        console.log(`object ${this.name} scale ${this.scale}`);
+
         const numModels = data.getUint8(0x55);
         const modelListOffs = data.getUint32(0x8);
         for (let i = 0; i < numModels; i++) {
@@ -783,9 +839,12 @@ export interface Light {
 }
 
 const scratchQuat0 = quat.create();
+const scratchColor0 = colorNewFromRGBA(1, 1, 1, 1);
+const scratchVec0 = vec3.create();
+const scratchMtx0 = mat4.create();
 
 export class ObjectInstance {
-    private modelInst: ModelInstance | null = null;
+    public modelInst: ModelInstance | null = null;
 
     public parent: ObjectInstance | null = null;
 
@@ -804,6 +863,10 @@ export class ObjectInstance {
     private layerVals0x5: number;
 
     private ambienceNum: number = 0;
+
+    public animSpeed: number = 0.1; // Default to a sensible value.
+    // In the game, each object class is responsible for driving its own animations
+    // at the appropriate speed.
 
     public instanceData: any;
 
@@ -828,7 +891,12 @@ export class ObjectInstance {
         this.setModelNum(0);
 
         if (objClass in SFA_CLASSES) {
-            SFA_CLASSES[objClass].setup(this, objParams);
+            try {
+                SFA_CLASSES[objClass].setup(this, objParams);
+            } catch (e) {
+                console.warn(`Failed to setup object class ${objClass} type ${typeNum} due to exception:`);
+                console.error(e);
+            }
         } else {
             console.log(`Don't know how to setup object class ${objClass} objType ${typeNum}`);
         }
@@ -836,23 +904,20 @@ export class ObjectInstance {
 
     public mount() {
         const objClass = SFA_CLASSES[this.objType.objClass];
-        if (objClass !== undefined && objClass.mount !== undefined) {
+        if (objClass !== undefined && objClass.mount !== undefined)
             objClass.mount(this, this.world);
-        }
     }
 
     public unmount() {
         const objClass = SFA_CLASSES[this.objType.objClass];
-        if (objClass !== undefined && objClass.unmount !== undefined) {
+        if (objClass !== undefined && objClass.unmount !== undefined)
             objClass.unmount(this, this.world);
-        }
     }
 
     public setParent(parent: ObjectInstance | null) {
         this.parent = parent;
-        if (parent !== null) {
+        if (parent !== null)
             console.log(`attaching this object (${this.objType.name}) to parent ${parent?.objType.name}`);
-        }
     }
 
     public getLocalSRT(): mat4 {
@@ -918,9 +983,8 @@ export class ObjectInstance {
             this.modanim = this.world.resColl.modanimColl.getModanim(modelNum);
             this.modelInst = modelInst;
 
-            if (this.modanim.byteLength > 0 && amap.byteLength > 0) {
+            if (this.modanim.byteLength > 0 && amap.byteLength > 0)
                 this.setModelAnimNum(0);
-            }
         } catch (e) {
             console.warn(`Failed to load model ${num} due to exception:`);
             console.error(e);
@@ -930,7 +994,7 @@ export class ObjectInstance {
 
     public setModelAnimNum(num: number) {
         this.modelAnimNum = num;
-        const modanim = this.modanim.getUint16(num * 2);
+        const modanim = readUint16(this.modanim, 0, num);
         this.setAnim(this.world.resColl.animColl.getAnim(modanim));
     }
 
@@ -939,13 +1003,12 @@ export class ObjectInstance {
     }
 
     public isInLayer(layer: number): boolean {
-        if (layer === 0) {
+        if (layer === 0)
             return true;
-        } else if (layer < 9) {
+        else if (layer < 9)
             return ((this.layerVals0x3 >>> (layer - 1)) & 1) === 0;
-        } else {
+        else
             return ((this.layerVals0x5 >>> (16 - layer)) & 1) === 0;
-        }
     }
 
     private curKeyframe: Keyframe | undefined = undefined;
@@ -954,12 +1017,13 @@ export class ObjectInstance {
         if (this.modelInst !== null && this.anim !== null && (!this.modelInst.model.hasFineSkinning || this.world.animController.enableFineSkinAnims)) {
             // TODO: use time values from animation data?
             const amap = this.modelInst.getAmap(this.modelAnimNum!);
-            const kfTime = (this.world.animController.animController.getTimeInSeconds() * 4) % this.anim.keyframes.length;
+            const kfTime = (this.world.animController.animController.getTimeInFrames() * this.animSpeed) % this.anim.keyframes.length;
+
             const kf0Num = Math.floor(kfTime);
             let kf1Num = kf0Num + 1;
-            if (kf1Num >= this.anim.keyframes.length) {
+            if (kf1Num >= this.anim.keyframes.length)
                 kf1Num = 0;
-            }
+
             const kf0 = this.anim.keyframes[kf0Num];
             const kf1 = this.anim.keyframes[kf1Num];
             const ratio = kfTime - kf0Num;
@@ -974,10 +1038,15 @@ export class ObjectInstance {
 
         if (this.modelInst !== null && this.modelInst !== undefined) {
             const mtx = this.getWorldSRT();
+            const viewMtx = scratchMtx0;
+            computeViewMatrix(viewMtx, objectCtx.sceneCtx.viewerInput.camera);
+            const viewPos = scratchVec0;
+            vec3.transformMat4(viewPos, this.position, viewMtx);
+            this.world.envfxMan.getAmbientColor(scratchColor0, this.ambienceNum);
             this.modelInst.prepareToRender(device, renderInstManager, {
                 ...objectCtx,
-                ambienceNum: this.ambienceNum,
-            }, mtx);
+                outdoorAmbientColor: scratchColor0,
+            }, mtx, -viewPos[2]);
 
             // Draw bones
             const drawBones = false;

@@ -173,9 +173,7 @@ function spawnLegacyActor(globals: dGlobals, legacy: d_a_noclip_legacy, actor: f
     }
 
     function createEmitter(context: WindWakerRenderer, resourceId: number): JPABaseEmitter {
-        const emitter = context.effectSystem!.createBaseEmitter(context.device, context.renderCache, resourceId);
-        // TODO(jstpierre): Scale, Rotation
-        return emitter;
+        return globals.particleCtrl.set(globals, 0, resourceId, null)!;
     }
 
     const objName = assertExists(globals.dStage_searchName(actorName));
@@ -1565,7 +1563,7 @@ function spawnLegacyActor(globals: dGlobals, legacy: d_a_noclip_legacy, actor: f
         const burningGroundEmitter = createEmitter(renderer, 0x461);
         const ringOfFlamesEmitter = createEmitter(renderer, 0x462);
         setModelMatrix(scratchMat4a);
-        vec3.set(scratchVec3a, 0, 0, 0);
+        vec3.zero(scratchVec3a);
         vec3.transformMat4(scratchVec3a, scratchVec3a, scratchMat4a);
         vec3.copy(burningGroundEmitter.globalTranslation, scratchVec3a);
         vec3.copy(ringOfFlamesEmitter.globalTranslation, scratchVec3a);

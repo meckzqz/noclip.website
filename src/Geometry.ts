@@ -1,5 +1,5 @@
 
-import { vec3, mat4, ReadonlyVec3 } from "gl-matrix";
+import { vec3, mat4, ReadonlyVec3, ReadonlyMat4 } from "gl-matrix";
 import { nArray } from "./util";
 import { transformVec3Mat4w1 } from "./MathHelpers";
 
@@ -52,7 +52,7 @@ export class AABB {
         public maxZ: number = -Infinity,
     ) {}
 
-    public transform(src: AABB, m: mat4): void {
+    public transform(src: AABB, m: ReadonlyMat4): void {
         // Transforming Axis-Aligned Bounding Boxes from Graphics Gems.
         const srcMin = scratchVec3a, srcMax = scratchVec3b;
         vec3.set(srcMin, src.minX, src.minY, src.minZ);
@@ -95,6 +95,10 @@ export class AABB {
 
     public reset(): void {
         this.set(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity);
+    }
+
+    public clone(): AABB {
+        return new AABB(this.minX, this.minY, this.minZ, this.maxX, this.maxY, this.maxZ);
     }
 
     public setFromPoints(points: vec3[]): void {
@@ -281,7 +285,7 @@ class FrustumVisualizer {
         this.ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
     }
 
-    public dsph(v: vec3, rad: number): void {
+    public dsph(v: ReadonlyVec3, rad: number): void {
         const xc = this.dsx(v[0]);
         const yc = this.dsy(v[2]);
         this.ctx.beginPath();
@@ -435,7 +439,7 @@ export class Frustum {
         return this.intersect(aabb) !== IntersectionState.FULLY_OUTSIDE;
     }
 
-    private _intersectSphere(v: vec3, radius: number): IntersectionState {
+    private _intersectSphere(v: ReadonlyVec3, radius: number): IntersectionState {
         if (!this.aabb.containsSphere(v, radius))
             return IntersectionState.FULLY_OUTSIDE;
 
@@ -451,7 +455,7 @@ export class Frustum {
         return res;
     }
 
-    public intersectSphere(v: vec3, radius: number): IntersectionState {
+    public intersectSphere(v: ReadonlyVec3, radius: number): IntersectionState {
         const res = this._intersectSphere(v, radius);
 
         if (this.visualizer) {
@@ -463,7 +467,7 @@ export class Frustum {
         return res;
     }
 
-    public containsSphere(v: vec3, radius: number): boolean {
+    public containsSphere(v: ReadonlyVec3, radius: number): boolean {
         return this.intersectSphere(v, radius) !== IntersectionState.FULLY_OUTSIDE;
     }
 

@@ -1,14 +1,14 @@
 
 import { mat4, vec3 } from "gl-matrix";
-import { assertExists, hexzero } from "../../util";
+import { assertExists, fallback, hexzero } from "../../util";
 import { LiveActor, ZoneAndLayer, dynamicSpawnZoneAndLayer } from "../LiveActor";
 import { SceneObjHolder, getObjectName, getTimeFrames } from "../Main";
-import { JMapInfoIter, createCsvParser } from "../JMapInfo";
+import { JMapInfoIter, createCsvParser, getJMapInfoScale, getJMapInfoRotateLocal, getJMapInfoTransLocal } from "../JMapInfo";
 import { ViewerRenderInput } from "../../viewer";
 import { initDefaultPos, isExistIndirectTexture, connectToSceneMapObjStrongLight, connectToSceneSky, connectToSceneIndirectMapObjStrongLight, connectToSceneBloom, isBrkExist, startBrk, startBtk, startBtp, setBtpFrameAndStop, startBrkIfExist, startBtkIfExist, startBva, startBck, startBckIfExist, setBckFrameAtRandom, getCamPos } from "../ActorUtil";
 import { MiniRouteGalaxy, MiniRoutePart, MiniRoutePoint } from "./MiscActor";
 import { isFirstStep } from "../Spine";
-import { scaleMatrix } from "../../MathHelpers";
+import { computeModelMatrixSRT, scaleMatrix } from "../../MathHelpers";
 import { initMultiFur } from "../Fur";
 import { LightType } from "../DrawBuffer";
 import { emitEffect } from "../EffectSystem";
@@ -26,7 +26,7 @@ const enum SceneGraphTag {
     Indirect = 3,
 };
 
-export interface ObjInfo {
+interface ObjInfo {
     objId: number;
     objName: string;
     objArg0: number;
@@ -142,9 +142,29 @@ export class NoclipLegacyActorSpawner {
         this.isWorldMap = this.isSMG2 && this.sceneObjHolder.sceneDesc.galaxyName.startsWith('WorldMap');
     }
 
-    public async spawnObjectLegacy(zoneAndLayer: ZoneAndLayer, infoIter: JMapInfoIter, objinfo: ObjInfo): Promise<void> {
+    public legacyCreateObjinfo(infoIter: JMapInfoIter): ObjInfo {
+        const objId = fallback(infoIter.getValueNumberNoInit('l_id'), -1);
+        const objName = fallback(infoIter.getValueString('name'), 'Unknown');
+        const objArg0 = fallback(infoIter.getValueNumberNoInit('Obj_arg0'), -1);
+        const modelMatrix = mat4.create();
+
+        const translation = vec3.create(), rotation = vec3.create(), scale = vec3.create();
+        getJMapInfoScale(scale, infoIter);
+        getJMapInfoRotateLocal(rotation, infoIter);
+        getJMapInfoTransLocal(translation, infoIter);
+        computeModelMatrixSRT(modelMatrix,
+            scale[0], scale[1], scale[2],
+            rotation[0], rotation[1], rotation[2],
+            translation[0], translation[1], translation[2]);
+
+        return { objId, objName, objArg0, modelMatrix };
+    }
+
+    public async spawnObjectLegacy(zoneAndLayer: ZoneAndLayer, infoIter: JMapInfoIter): Promise<void> {
         const modelCache = this.sceneObjHolder.modelCache;
         const galaxyName = this.sceneObjHolder.sceneDesc.galaxyName;
+
+        const objinfo = this.legacyCreateObjinfo(infoIter);
 
         const applyAnimations = (actor: LiveActor, animOptions: AnimOptions | null | undefined) => {
             if (animOptions !== null) {
@@ -217,9 +237,7 @@ export class NoclipLegacyActorSpawner {
                 initMultiFur(this.sceneObjHolder, actor, LightType.None);
             } break;
 
-            case 'MeteorCannon':
             case 'Plant':
-            case 'Creeper':
             case 'TrampleStar':
             case 'FlagKoopaC':
             case 'WoodLogBridge':
@@ -239,13 +257,10 @@ export class NoclipLegacyActorSpawner {
             case 'MameMuimuiAttackMan':
             case 'SuperDreamer':
             case 'PetitPorterWarpPoint':
-            case 'TimerCoinBlock':
             case 'CoinLinkGroup':
             case 'CollectTico':
-            case 'BrightSun':
             case 'InstantInferno':
             case 'FireRing':
-            case 'FireBar':
             case 'JumpBeamer':
             case 'WaterFortressRain':
             case 'BringEnemy':
@@ -283,10 +298,7 @@ export class NoclipLegacyActorSpawner {
             // The actual engine will search for a file suffixed "Bloom" and spawn it if so.
             // Here, we don't want to trigger that many HTTP requests, so we just list all
             // models with bloom variants explicitly.
-            case 'AssemblyBlockPartsTimerA':
-            case 'AstroDomeComet':
             case 'HeavensDoorInsidePlanetPartsA':
-            case 'LavaProminence':
             case 'LavaProminenceEnvironment':
             case 'LavaProminenceTriple':
                 spawnGraph(name, SceneGraphTag.Normal);
@@ -358,12 +370,6 @@ export class NoclipLegacyActorSpawner {
                 // spawnGraph(`Koura`);
                 break;
 
-            case 'HeavensDoorAppearStepA':
-                // This is the transition effect version of the steps that appear after you chase the bunnies in Gateway Galaxy.
-                // "HeavensDoorAppearStepAAfter" is the non-transition version of the same, and it's also spawned, so don't
-                // bother spawning this one.
-                return;
-
             case 'GreenStar':
             case 'PowerStar':
                 spawnGraph(`PowerStar`, SceneGraphTag.Normal, { }).then((actor) => {
@@ -411,15 +417,6 @@ export class NoclipLegacyActorSpawner {
                 spawnGraph(`WorldMap03Sky`, SceneGraphTag.Skybox);
                 break;
 
-            case 'DinoPackunVs1':
-            case 'DinoPackunVs2':
-                spawnGraph(`DinoPackun`);
-                break;
-
-            case 'Mogucchi':
-                spawnGraph(name, SceneGraphTag.Normal, { bck: 'walk.bck' });
-                return;
-
             case 'Dodoryu':
                 spawnGraph(name, SceneGraphTag.Normal, { bck: 'swoon.bck' });
                 break;
@@ -433,9 +430,6 @@ export class NoclipLegacyActorSpawner {
                 // TODO(jstpierre): Parent the wing to the kurib.
                 spawnGraph(`Kuribo`, SceneGraphTag.Normal, { bck: 'patakuriwait.bck' });
                 spawnGraph(`PatakuriWing`);
-                break;
-            case 'ShellfishCoin':
-                spawnGraph(`Shellfish`);
                 break;
             case 'TogeBegomanLauncher':
             case 'BegomanBabyLauncher':
@@ -455,9 +449,6 @@ export class NoclipLegacyActorSpawner {
                 spawnGraph(name).then((actor) => {
                     actor.modelInstance!.setMaterialVisible('TicoCoinEmpty_v', false);
                 });
-                break;
-            case 'WanwanRolling':
-                spawnGraph(name, SceneGraphTag.Normal, { });
                 break;
             case 'PhantomCandlestand':
                 spawnGraph(name).then((actor) => {

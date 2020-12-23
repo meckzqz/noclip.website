@@ -1,25 +1,25 @@
 
 // Utilities for various actor implementations.
 
-import { mat4, quat, ReadonlyQuat, ReadonlyVec3, vec2, vec3 } from "gl-matrix";
+import { mat4, quat, ReadonlyMat4, ReadonlyQuat, ReadonlyVec3, vec2, vec3 } from "gl-matrix";
 import { Camera, texProjCameraSceneTex } from "../Camera";
-import { LoopMode } from "../Common/JSYSTEM/J3D/J3DLoader";
+import { J3DFrameCtrl__UpdateFlags } from "../Common/JSYSTEM/J3D/J3DGraphAnimator";
 import { JKRArchive } from "../Common/JSYSTEM/JKRArchive";
 import { BTI, BTIData } from "../Common/JSYSTEM/JUTTexture";
-import { getMatrixAxisY, getMatrixAxisZ, getMatrixTranslation, isNearZero, isNearZeroVec3, MathConstants, normToLength, saturate, scaleMatrix, setMatrixTranslation, Vec3UnitY, Vec3UnitZ, Vec3Zero, setMatrixAxis, getMatrixAxis, lerp, Vec3UnitX } from "../MathHelpers";
+import { GfxNormalizedViewportCoords } from "../gfx/platform/GfxPlatform";
+import { computeMatrixWithoutScale, computeModelMatrixR, computeModelMatrixT, getMatrixAxis, getMatrixAxisY, getMatrixAxisZ, getMatrixTranslation, isNearZero, isNearZeroVec3, lerp, MathConstants, normToLength, saturate, scaleMatrix, setMatrixAxis, setMatrixTranslation, Vec3UnitX, Vec3UnitY, Vec3UnitZ, Vec3Zero } from "../MathHelpers";
 import { assertExists } from "../util";
 import { getRes, XanimePlayer } from "./Animation";
-import { AreaObj } from "./AreaObj";
-import { CollisionScaleType, invalidateCollisionParts, validateCollisionParts, CollisionPartsFilterFunc, CollisionParts, Triangle, getFirstPolyOnLineToMapExceptActor } from "./Collision";
+import { AreaObj, isInAreaObj } from "./AreaObj";
+import { CollisionParts, CollisionPartsFilterFunc, CollisionScaleType, getBindedFixReactionVector, getFirstPolyOnLineToMapExceptActor, invalidateCollisionParts, isBinded, isFloorPolygonAngle, isOnGround, isWallPolygonAngle, Triangle, validateCollisionParts } from "./Collision";
 import { GravityInfo, GravityTypeMask } from "./Gravity";
-import { HitSensor, HitSensorType } from "./HitSensor";
+import { HitSensor, sendMsgPush } from "./HitSensor";
 import { getJMapInfoScale, JMapInfoIter } from "./JMapInfo";
-import { getJMapInfoRotate, getJMapInfoTrans, LiveActor, makeMtxTRFromActor, MsgSharedGroup } from "./LiveActor";
-import { SceneObj, SceneObjHolder, ResourceHolder } from "./Main";
+import { getJMapInfoRotate, getJMapInfoTrans, LiveActor, LiveActorGroup, makeMtxTRFromActor, MsgSharedGroup } from "./LiveActor";
+import { ResourceHolder, SceneObj, SceneObjHolder } from "./Main";
 import { CalcAnimType, DrawBufferType, DrawType, MovementType, NameObj } from "./NameObj";
 import { RailDirection } from "./RailRider";
 import { addSleepControlForLiveActor, getSwitchWatcherHolder, isExistStageSwitchA, isExistStageSwitchAppear, isExistStageSwitchB, isExistStageSwitchDead, SwitchCallback, SwitchFunctorEventListener } from "./Switch";
-import { GfxNormalizedViewportCoords } from "../gfx/platform/GfxPlatform";
 
 const scratchVec3 = vec3.create();
 const scratchVec3a = vec3.create();
@@ -190,7 +190,7 @@ export function getJointMtx(actor: LiveActor, i: number): mat4 {
 export function getJointMtxByName(actor: LiveActor, n: string): mat4 | null {
     const modelInstance = actor.modelInstance;
     if (modelInstance === null)
-        return null;    
+        return null;
     const joints = modelInstance.modelData.bmd.jnt1.joints;
     for (let i = 0; i < joints.length; i++)
         if (joints[i].name === n)
@@ -202,9 +202,19 @@ export function isBckStopped(actor: LiveActor): boolean {
     return actor.modelManager!.isBckStopped();
 }
 
+export function getBckFrame(actor: LiveActor): number {
+    const bckCtrl = actor.modelManager!.getBckCtrl();
+    return bckCtrl.currentTimeInFrames;
+}
+
 export function getBckFrameMax(actor: LiveActor): number {
     const bckCtrl = actor.modelManager!.getBckCtrl();
     return bckCtrl.endFrame;
+}
+
+export function getBckFrameMaxNamed(actor: LiveActor, name: string): number {
+    const bck = actor.modelManager!.resourceHolder.getRes(actor.modelManager!.resourceHolder.motionTable, name)!;
+    return bck.duration;
 }
 
 export function isBrkStopped(actor: LiveActor): boolean {
@@ -220,10 +230,9 @@ export function isBtpStopped(actor: LiveActor): boolean {
     return actor.modelManager!.isBtpStopped();
 }
 
-// TODO(jstpierre): Remove.
-export function setLoopMode(actor: LiveActor, loopMode: LoopMode): void {
-    const bckCtrl = actor.modelManager!.getBckCtrl();
-    bckCtrl.loopMode = loopMode;
+export function getBvaFrameMax(actor: LiveActor): number {
+    const bvaCtrl = actor.modelManager!.getBvaCtrl();
+    return bvaCtrl.endFrame;
 }
 
 export function initDefaultPos(sceneObjHolder: SceneObjHolder, actor: LiveActor, infoIter: JMapInfoIter | null): void {
@@ -287,6 +296,10 @@ export function tryStartBck(actor: LiveActor, name: string): boolean {
     }
 }
 
+export function isExistBck(actor: LiveActor, name: string): boolean {
+    return actor.resourceHolder.isExistRes(actor.resourceHolder.motionTable, name);
+}
+
 export function startBck(actor: LiveActor, name: string): void {
     actor.modelManager!.startBck(name);
     if (actor.effectKeeper !== null)
@@ -305,8 +318,16 @@ export function startBckNoInterpole(actor: LiveActor, name: string): void {
         actor.effectKeeper.changeBck();
 }
 
+export function stopBck(actor: LiveActor): void {
+    actor.modelManager!.getBckCtrl().speedInFrames = 0.0;
+}
+
 export function startBtk(actor: LiveActor, name: string): void {
     actor.modelManager!.startBtk(name);
+}
+
+export function isExistBtk(actor: LiveActor, name: string): boolean {
+    return actor.resourceHolder.isExistRes(actor.resourceHolder.btkTable, name);
 }
 
 export function startBrk(actor: LiveActor, name: string): void {
@@ -442,7 +463,8 @@ export function setBvaRate(actor: LiveActor, rate: number): void {
 }
 
 export function isBckPlayingXanimePlayer(xanimePlayer: XanimePlayer, name: string): boolean {
-    // TODO(jstpierre): Support stopped flag?
+    if (!!(xanimePlayer.frameCtrl.updateFlags & J3DFrameCtrl__UpdateFlags.HasStopped))
+        return false;
     return xanimePlayer.isRun(name) && xanimePlayer.frameCtrl.speedInFrames !== 0.0;
 }
 
@@ -475,7 +497,6 @@ export function isBvaPlaying(actor: LiveActor, name: string): boolean {
 }
 
 export function isAnyAnimStopped(actor: LiveActor, name: string): boolean {
-    // TODO(jstpierre): I can't figure out what actually checks that the animation *was* playing. Weird.
     if (!isBckExist(actor, name) || !actor.modelManager!.isBckStopped())
         return false;
     if (!isBtkExist(actor, name) || !actor.modelManager!.isBtkStopped())
@@ -496,6 +517,10 @@ export function isActionStart(actor: LiveActor, action: string): boolean {
         return actor.actorAnimKeeper.isPlaying(actor, action);
     else
         return isBckPlaying(actor, action);
+}
+
+export function isActionEnd(actor: LiveActor): boolean {
+    return isBckStopped(actor);
 }
 
 export function tryStartAction(actor: LiveActor, action: string): boolean {
@@ -530,30 +555,6 @@ export function getRandomInt(min: number, max: number): number {
     return getRandomFloat(min, max) | 0;
 }
 
-export function addHitSensor(sceneObjHolder: SceneObjHolder, actor: LiveActor, name: string, hitSensorType: HitSensorType, pairwiseCapacity: number, radius: number, offset: ReadonlyVec3) {
-    return actor.hitSensorKeeper!.add(sceneObjHolder, name, hitSensorType, pairwiseCapacity, radius, actor, offset);
-}
-
-export function addBodyMessageSensorMapObj(sceneObjHolder: SceneObjHolder, actor: LiveActor) {
-    return actor.hitSensorKeeper!.add(sceneObjHolder, `body`, HitSensorType.MapObj, 0, 0.0, actor, Vec3Zero);
-}
-
-export function addBodyMessageSensorMapObjPress(sceneObjHolder: SceneObjHolder, actor: LiveActor) {
-    return actor.hitSensorKeeper!.add(sceneObjHolder, `body`, HitSensorType.MapObjPress, 0, 0.0, actor, Vec3Zero);
-}
-
-export function addHitSensorMapObj(sceneObjHolder: SceneObjHolder, actor: LiveActor, name: string, pairwiseCapacity: number, radius: number, offset: ReadonlyVec3) {
-    return actor.hitSensorKeeper!.add(sceneObjHolder, name, HitSensorType.Npc, pairwiseCapacity, radius, actor, offset);
-}
-
-export function invalidateHitSensors(actor: LiveActor): void {
-    actor.hitSensorKeeper!.invalidate();
-}
-
-export function validateHitSensors(actor: LiveActor): void {
-    actor.hitSensorKeeper!.validate();
-}
-
 function calcCollisionMtx(dst: mat4, actor: LiveActor): void {
     mat4.copy(dst, assertExists(actor.getBaseMtx()));
     const scaleX = actor.scale[0];
@@ -584,6 +585,14 @@ export function invalidateCollisionPartsForActor(sceneObjHolder: SceneObjHolder,
 
 export function initCollisionParts(sceneObjHolder: SceneObjHolder, actor: LiveActor, name: string, hitSensor: HitSensor, hostMtx: mat4 | null = null, resourceHolder: ResourceHolder | null = null) {
     actor.initActorCollisionParts(sceneObjHolder, name, hitSensor, resourceHolder, hostMtx, CollisionScaleType.AutoScale);
+}
+
+export function initCollisionPartsAutoEqualScale(sceneObjHolder: SceneObjHolder, actor: LiveActor, name: string, hitSensor: HitSensor, hostMtx: mat4 | null = null, resourceHolder: ResourceHolder | null = null) {
+    actor.initActorCollisionParts(sceneObjHolder, name, hitSensor, resourceHolder, hostMtx, CollisionScaleType.AutoEqualScale);
+}
+
+export function initCollisionPartsAutoEqualScaleOne(sceneObjHolder: SceneObjHolder, actor: LiveActor, name: string, hitSensor: HitSensor, hostMtx: mat4 | null = null, resourceHolder: ResourceHolder | null = null) {
+    actor.initActorCollisionParts(sceneObjHolder, name, hitSensor, resourceHolder, hostMtx, CollisionScaleType.AutoEqualScaleOne);
 }
 
 export function getRailTotalLength(actor: LiveActor): number {
@@ -628,6 +637,13 @@ export function isRailGoingToEnd(actor: LiveActor): boolean {
 
 export function isRailReachedGoal(actor: LiveActor): boolean {
     return actor.railRider!.isReachedGoal();
+}
+
+export function isRailReachedNearGoal(actor: LiveActor, distance: number): boolean {
+    if (isRailGoingToEnd(actor))
+        return actor.railRider!.coord >= getRailTotalLength(actor) - distance;
+    else
+        return actor.railRider!.coord < distance;
 }
 
 export function reverseRailDirection(actor: LiveActor): void {
@@ -679,6 +695,12 @@ export function moveCoordAndTransToNearestRailPos(actor: LiveActor): void {
     vec3.copy(actor.translation, actor.railRider!.currentPos);
 }
 
+export function moveCoordAndTransToRailPoint(actor: LiveActor, i: number): void {
+    const coord = actor.railRider!.getPointCoord(i);
+    actor.railRider!.setCoord(coord);
+    vec3.copy(actor.translation, actor.railRider!.currentPos);
+}
+
 export function moveCoordAndTransToNearestRailPoint(actor: LiveActor): void {
     actor.railRider!.moveToNearestPoint(actor.translation);
     vec3.copy(actor.translation, actor.railRider!.currentPos);
@@ -689,12 +711,13 @@ export function moveCoordAndTransToRailStartPoint(actor: LiveActor): void {
     vec3.copy(actor.translation, actor.railRider!.currentPos);
 }
 
-export function moveCoord(actor: LiveActor, speed: number): void {
-    actor.railRider!.setSpeed(speed);
+export function moveCoord(actor: LiveActor, speed: number | null = null): void {
+    if (speed !== null)
+        actor.railRider!.setSpeed(speed);
     actor.railRider!.move();
 }
 
-export function moveCoordAndFollowTrans(actor: LiveActor, speed: number): void {
+export function moveCoordAndFollowTrans(actor: LiveActor, speed: number | null = null): void {
     moveCoord(actor, speed);
     vec3.copy(actor.translation, actor.railRider!.currentPos);
 }
@@ -745,6 +768,11 @@ export function getRailPos(v: vec3, actor: LiveActor): void {
 
 export function setRailCoord(actor: LiveActor, coord: number): void {
     actor.railRider!.setCoord(coord);
+}
+
+export function setRailDirectionToStart(actor: LiveActor): void {
+    if (actor.railRider!.direction === RailDirection.TowardsEnd)
+        actor.railRider!.reverse();
 }
 
 export function setRailDirectionToEnd(actor: LiveActor): void {
@@ -806,6 +834,23 @@ export function calcDistanceToCurrentAndNextRailPoint(dst: vec2, actor: LiveActo
     }
 }
 
+export function calcNearestRailPos(dst: vec3, actor: LiveActor, translation: ReadonlyVec3): void {
+    const coord = actor.railRider!.calcNearestPos(translation);
+    actor.railRider!.calcPosAtCoord(dst, coord);
+}
+
+export function calcNearestRailDirection(dst: vec3, actor: LiveActor, translation: ReadonlyVec3): void {
+    const coord = actor.railRider!.calcNearestPos(translation);
+    actor.railRider!.calcDirectionAtCoord(dst, coord);
+}
+
+export function calcNearestRailPosAndDirection(dstPos: vec3, dstDirection: vec3, actor: LiveActor, translation: ReadonlyVec3): number {
+    const coord = actor.railRider!.calcNearestPos(translation);
+    actor.railRider!.calcPosAtCoord(dstPos, coord);
+    actor.railRider!.calcDirectionAtCoord(dstDirection, coord);
+    return coord;
+}
+
 export function calcMtxAxis(axisX: vec3 | null, axisY: vec3 | null, axisZ: vec3 | null, m: mat4): void {
     getMatrixAxis(axisX, axisY, axisZ, m);
 }
@@ -850,10 +895,12 @@ export function calcGravityVector(sceneObjHolder: SceneObjHolder, nameObj: NameO
     return calcGravityVectorOrZero(sceneObjHolder, nameObj, coord, GravityTypeMask_Normal, dst, gravityInfo, attachmentFilter);
 }
 
-export function calcGravity(sceneObjHolder: SceneObjHolder, actor: LiveActor): void {
+export function calcGravity(sceneObjHolder: SceneObjHolder, actor: LiveActor): boolean {
     calcGravityVector(sceneObjHolder, actor, actor.translation, scratchVec3);
-    if (!isNearZeroVec3(scratchVec3, 0.001))
-        vec3.copy(actor.gravityVector, scratchVec3);
+    if (isNearZeroVec3(scratchVec3, 0.001))
+        return false;
+    vec3.copy(actor.gravityVector, scratchVec3);
+    return true;
 }
 
 export function isZeroGravity(sceneObjHolder: SceneObjHolder, actor: LiveActor): boolean {
@@ -875,12 +922,12 @@ export function setMtxAxisXYZ(dst: mat4, x: ReadonlyVec3, y: ReadonlyVec3, z: Re
 export function makeMtxFrontUp(dst: mat4, front: ReadonlyVec3, up: ReadonlyVec3): void {
     const frontNorm = scratchVec3a;
     const upNorm = scratchVec3b;
-    const right = scratchVec3c;
+    const side = scratchVec3c;
     vec3.normalize(frontNorm, front);
-    vec3.cross(right, up, frontNorm);
-    vec3.normalize(right, right);
-    vec3.cross(upNorm, frontNorm, right);
-    setMtxAxisXYZ(dst, right, upNorm, frontNorm);
+    vec3.cross(side, up, frontNorm);
+    vec3.normalize(side, side);
+    vec3.cross(upNorm, frontNorm, side);
+    setMtxAxisXYZ(dst, side, upNorm, frontNorm);
 }
 
 export function makeMtxFrontUpPos(dst: mat4, front: ReadonlyVec3, up: ReadonlyVec3, pos: ReadonlyVec3): void {
@@ -891,12 +938,12 @@ export function makeMtxFrontUpPos(dst: mat4, front: ReadonlyVec3, up: ReadonlyVe
 export function makeMtxUpFront(dst: mat4, up: ReadonlyVec3, front: ReadonlyVec3): void {
     const upNorm = scratchVec3b;
     const frontNorm = scratchVec3a;
-    const right = scratchVec3c;
+    const side = scratchVec3c;
     vec3.normalize(upNorm, up);
-    vec3.cross(right, up, front);
-    vec3.normalize(right, right);
-    vec3.cross(frontNorm, right, upNorm);
-    setMtxAxisXYZ(dst, right, upNorm, frontNorm);
+    vec3.cross(side, up, front);
+    vec3.normalize(side, side);
+    vec3.cross(frontNorm, side, upNorm);
+    setMtxAxisXYZ(dst, side, upNorm, frontNorm);
 }
 
 export function makeMtxUpFrontPos(dst: mat4, up: ReadonlyVec3, front: ReadonlyVec3, pos: ReadonlyVec3): void {
@@ -904,8 +951,41 @@ export function makeMtxUpFrontPos(dst: mat4, up: ReadonlyVec3, front: ReadonlyVe
     setMatrixTranslation(dst, pos);
 }
 
+export function makeMtxFrontSide(dst: mat4, front: ReadonlyVec3, side: ReadonlyVec3): void {
+    const up = scratchVec3b;
+    const frontNorm = scratchVec3a;
+    const sideNorm = scratchVec3c;
+    vec3.normalize(frontNorm, front);
+    vec3.cross(up, frontNorm, side);
+    vec3.normalize(up, up);
+    vec3.cross(sideNorm, up, frontNorm);
+    setMtxAxisXYZ(dst, sideNorm, up, frontNorm);
+}
+
+export function makeMtxSideUp(dst: mat4, side: ReadonlyVec3, up: ReadonlyVec3): void {
+    const front = scratchVec3b;
+    const sideNorm = scratchVec3a;
+    const upNorm = scratchVec3c;
+    vec3.normalize(sideNorm, side);
+    vec3.cross(front, sideNorm, up);
+    vec3.normalize(front, front);
+    vec3.cross(upNorm, front, sideNorm);
+    setMtxAxisXYZ(dst, sideNorm, upNorm, front);
+}
+
+export function makeMtxFrontSidePos(dst: mat4, front: ReadonlyVec3, side: ReadonlyVec3, pos: ReadonlyVec3): void {
+    makeMtxFrontSide(dst, front, side);
+    setMatrixTranslation(dst, pos);
+}
+
 export function makeQuatUpFront(dst: quat, up: ReadonlyVec3, front: ReadonlyVec3): void {
-    makeMtxUpFrontPos(scratchMatrix, up, front, Vec3Zero);
+    makeMtxUpFront(scratchMatrix, up, front);
+    mat4.getRotation(dst, scratchMatrix);
+    quat.normalize(dst, dst);
+}
+
+export function makeQuatSideUp(dst: quat, side: ReadonlyVec3, up: ReadonlyVec3): void {
+    makeMtxSideUp(scratchMatrix, side, up);
     mat4.getRotation(dst, scratchMatrix);
     quat.normalize(dst, dst);
 }
@@ -917,6 +997,12 @@ export function makeAxisVerticalZX(axisRight: vec3, front: ReadonlyVec3): void {
     vec3.normalize(axisRight, axisRight);
 }
 
+export function makeAxisCrossPlane(axisRight: vec3, axisUp: vec3, front: vec3): void {
+    makeAxisVerticalZX(axisRight, front);
+    vec3.cross(axisUp, front, axisRight);
+    vec3.normalize(axisUp, axisUp);
+}
+
 export function quatSetRotate(q: quat, v0: ReadonlyVec3, v1: ReadonlyVec3, t: number = 1.0, scratch = scratchVec3): void {
     // v0 and v1 are normalized.
 
@@ -926,6 +1012,8 @@ export function quatSetRotate(q: quat, v0: ReadonlyVec3, v1: ReadonlyVec3, t: nu
     if (sin > MathConstants.EPSILON) {
         const cos = vec3.dot(v0, v1);
         const theta = Math.atan2(sin, cos);
+        // normalize
+        vec3.scale(scratch, scratch, 1.0 / sin);
         quat.setAxisAngle(q, scratch, theta * t);
     } else {
         quat.identity(q);
@@ -951,6 +1039,43 @@ export function quatGetAxisZ(dst: vec3, q: ReadonlyQuat): void {
     dst[0] = 2.0 * x * z + 2.0 * w * y;
     dst[1] = 2.0 * y * z - 2.0 * x * w;
     dst[2] = (1.0 - 2.0 * x * x) - 2.0 * y * y;
+}
+
+export function quatFromMat4(out: quat, m: ReadonlyMat4): void {
+    // Algorithm in Ken Shoemake's article in 1987 SIGGRAPH course notes
+    // article "Quaternion Calculus and Fast Animation".
+    const fTrace = m[0] + m[5] + m[10];
+    let fRoot;
+    
+    if (fTrace > 0.0) {
+        // |w| > 1/2, may as well choose w > 1/2
+        fRoot = Math.sqrt(fTrace + 1.0); // 2w
+
+        out[3] = 0.5 * fRoot;
+        fRoot = 0.5 / fRoot; // 1/(4w)
+
+        out[0] = (m[6] - m[9]) * fRoot;
+        out[1] = (m[8] - m[2]) * fRoot;
+        out[2] = (m[1] - m[4]) * fRoot;
+    } else {
+        // |w| <= 1/2
+        let i = 0;
+        if (m[5] > m[0]) i = 1;
+        if (m[10] > m[i * 4 + i]) i = 2;
+        const j = (i + 1) % 3;
+        const k = (i + 2) % 3;
+        fRoot = Math.sqrt(m[i * 4 + i] - m[j * 4 + j] - m[k * 4 + k] + 1.0);
+        out[i] = 0.5 * fRoot;
+        fRoot = 0.5 / fRoot;
+        out[3] = (m[j * 4 + k] - m[k * 4 + j]) * fRoot;
+        out[j] = (m[j * 4 + i] + m[i * 4 + j]) * fRoot;
+        out[k] = (m[k * 4 + i] + m[i * 4 + k]) * fRoot;
+    }
+}
+
+export function makeQuatFromVec(dst: quat, front: ReadonlyVec3, up: ReadonlyVec3): void {
+    makeMtxFrontUp(scratchMatrix, front, up);
+    quatFromMat4(dst, scratchMatrix);
 }
 
 export function isSameDirection(a: ReadonlyVec3, b: ReadonlyVec3, ep: number): boolean {
@@ -997,9 +1122,13 @@ export function blendQuatUpFront(dst: quat, q: ReadonlyQuat, up: ReadonlyVec3, f
     if (vec3.dot(axisZ, axisY) < 0.0 && isSameDirection(axisZ, axisY, 0.01))
         turnRandomVector(axisZ, axisZ, 0.001);
 
+    const v0 = vec3.clone(axisZ);
+    const v1 = vec3.clone(axisY);
     quatSetRotate(scratchQuat, axisZ, axisY, speedFront, scratch);
     quat.mul(dst, scratchQuat, dst);
     quat.normalize(dst, dst);
+    quatGetAxisZ(scratch, dst);
+    const ret = vec3.clone(scratch);
 }
 
 export function turnQuat(dst: quat, q: ReadonlyQuat, v0: ReadonlyVec3, v1: ReadonlyVec3, rad: number): void {
@@ -1143,7 +1272,7 @@ export function useStageSwitchReadAppear(sceneObjHolder: SceneObjHolder, actor: 
 }
 
 export function syncStageSwitchAppear(sceneObjHolder: SceneObjHolder, actor: LiveActor): void {
-    // TODO(jstpierre): How is SW_APPEAR *actually* different from Sleep, except for the vfunc used?
+    // XXX(jstpierre): How is SW_APPEAR *actually* different from Sleep, except for the vfunc used?
 
     // NOTE(jstpierre): ActorAppearSwitchListener is calls appear/kill vfunc instead, but
     // I can't see the motivation behind these two different vfuncs tbqh.
@@ -1157,17 +1286,17 @@ export function syncStageSwitchAppear(sceneObjHolder: SceneObjHolder, actor: Liv
     getSwitchWatcherHolder(sceneObjHolder).joinSwitchEventListenerAppear(actor.stageSwitchCtrl!, eventListener);
 }
 
-export function listenStageSwitchOnOffA(sceneObjHolder: SceneObjHolder, actor: LiveActor, cbOn: SwitchCallback, cbOff: SwitchCallback): void {
+export function listenStageSwitchOnOffA(sceneObjHolder: SceneObjHolder, actor: LiveActor, cbOn: SwitchCallback | null, cbOff: SwitchCallback | null): void {
     const eventListener = new SwitchFunctorEventListener(cbOn, cbOff);
     getSwitchWatcherHolder(sceneObjHolder).joinSwitchEventListenerA(actor.stageSwitchCtrl!, eventListener);
 }
 
-export function listenStageSwitchOnOffB(sceneObjHolder: SceneObjHolder, actor: LiveActor, cbOn: SwitchCallback, cbOff: SwitchCallback): void {
+export function listenStageSwitchOnOffB(sceneObjHolder: SceneObjHolder, actor: LiveActor, cbOn: SwitchCallback | null, cbOff: SwitchCallback | null): void {
     const eventListener = new SwitchFunctorEventListener(cbOn, cbOff);
     getSwitchWatcherHolder(sceneObjHolder).joinSwitchEventListenerB(actor.stageSwitchCtrl!, eventListener);
 }
 
-export function listenStageSwitchOnOffAppear(sceneObjHolder: SceneObjHolder, actor: LiveActor, cbOn: SwitchCallback, cbOff: SwitchCallback): void {
+export function listenStageSwitchOnOffAppear(sceneObjHolder: SceneObjHolder, actor: LiveActor, cbOn: SwitchCallback | null, cbOff: SwitchCallback | null): void {
     const eventListener = new SwitchFunctorEventListener(cbOn, cbOff);
     getSwitchWatcherHolder(sceneObjHolder).joinSwitchEventListenerAppear(actor.stageSwitchCtrl!, eventListener);
 }
@@ -1231,18 +1360,14 @@ export function joinToGroupArray<T extends LiveActor>(sceneObjHolder: SceneObjHo
     return sceneObjHolder.liveActorGroupArray!.entry(sceneObjHolder, actor, infoIter, groupName, maxCount);
 }
 
-function getGroundNormal(actor: LiveActor): vec3 {
-    return actor.binder!.floorHitInfo.faceNormal;
+export function getGroupFromArray<T extends LiveActor>(sceneObjHolder: SceneObjHolder, nameObj: T): LiveActorGroup<T> | null {
+    if (sceneObjHolder.liveActorGroupArray === null)
+        return null;
+    return sceneObjHolder.liveActorGroupArray.getLiveActorGroup(nameObj);
 }
 
-function isOnGround(actor: LiveActor): boolean {
-    if (actor.binder === null)
-        return false;
-
-    if (actor.binder.floorHitInfo.distance < 0.0)
-        return false;
-
-    return vec3.dot(actor.binder.floorHitInfo.faceNormal, actor.velocity) < 0.0;
+function getGroundNormal(actor: LiveActor): vec3 {
+    return actor.binder!.floorHitInfo.faceNormal;
 }
 
 function calcVelocityMoveToDirectionHorizon(dst: vec3, actor: LiveActor, direction: ReadonlyVec3, speed: number): void {
@@ -1308,22 +1433,45 @@ export function getCamZdir(v: vec3, camera: Camera): void {
     vec3.negate(v, v);
 }
 
+export function calcSqDistToCamera(actor: LiveActor, camera: Camera, scratch: vec3 = scratchVec3): number {
+    getCamPos(scratch, camera);
+    return vec3.squaredDistance(actor.translation, scratch);
+}
+
 export function calcDistToCamera(actor: LiveActor, camera: Camera, scratch: vec3 = scratchVec3): number {
     getCamPos(scratch, camera);
     return vec3.distance(actor.translation, scratch);
 }
 
-export function calcSqDistanceToPlayer(actor: LiveActor, camera: Camera, scratch: vec3 = scratchVec3): number {
-    getCamPos(scratch, camera);
-    return vec3.squaredDistance(actor.translation, scratch);
+export function calcSqDistanceToPlayer(sceneObjHolder: SceneObjHolder, actor: LiveActor): number {
+    return calcSqDistToCamera(actor, sceneObjHolder.viewerInput.camera, scratchVec3);
 }
 
-export function calcDistanceToPlayer(actor: LiveActor, camera: Camera, scratch: vec3 = scratchVec3): number {
-    return calcDistToCamera(actor, camera, scratch);
+export function calcDistanceToPlayer(sceneObjHolder: SceneObjHolder, actor: LiveActor): number {
+    return calcDistToCamera(actor, sceneObjHolder.viewerInput.camera, scratchVec3);
+}
+
+export function calcDistanceToPlayerH(sceneObjHolder: SceneObjHolder, actor: LiveActor): number {
+    getPlayerPos(scratchVec3a, sceneObjHolder);
+    vec3.sub(scratchVec3a, scratchVec3a, actor.translation);
+    vecKillElement(scratchVec3a, scratchVec3a, actor.gravityVector);
+    return vec3.length(scratchVec3a);
 }
 
 export function isNearPlayer(sceneObjHolder: SceneObjHolder, actor: LiveActor, radius: number): boolean {
-    return calcDistanceToPlayer(actor, sceneObjHolder.viewerInput.camera) <= radius;
+    return calcSqDistanceToPlayer(sceneObjHolder, actor) <= radius ** 2.0;
+}
+
+export function isNearPlayerPose(sceneObjHolder: SceneObjHolder, actor: LiveActor, radius: number, threshold: number): boolean {
+    getPlayerPos(scratchVec3a, sceneObjHolder);
+    vec3.sub(scratchVec3a, scratchVec3a, actor.translation);
+
+    getMatrixAxisY(scratchVec3b, actor.getBaseMtx()!);
+    const dot = vecKillElement(scratchVec3a, scratchVec3a, scratchVec3b);
+    if (Math.abs(dot) <= threshold)
+        return vec3.squaredLength(scratchVec3a) <= radius ** 2.0;
+    else
+        return false;
 }
 
 export function getJointNum(actor: LiveActor): number {
@@ -1350,19 +1498,19 @@ export function validateShadowAll(actor: LiveActor): void {
         actor.shadowControllerList!.shadowControllers[i].validate();
 }
 
-export function getEaseInValue(v0: number, v1: number, v2: number, v3: number): number {
-    const t = Math.cos((v0 / v3) * Math.PI * 0.5);
-    return lerp(v1, v2, 1 - t);
+export function getEaseInValue(t: number, dstMin: number = 0.0, dstMax: number = 1.0, duration: number = 1.0): number {
+    const curvedT = Math.cos((t / duration) * Math.PI * 0.5);
+    return lerp(dstMin, dstMax, 1.0 - curvedT);
 }
 
-export function getEaseOutValue(v0: number, v1: number, v2: number, v3: number): number {
-    const t = Math.sin((v0 / v3) * Math.PI * 0.5);
-    return lerp(v1, v2, t);
+export function getEaseOutValue(t: number, dstMin: number = 0.0, dstMax: number = 1.0, duration: number = 1.0): number {
+    const curvedT = Math.sin((t / duration) * Math.PI * 0.5);
+    return lerp(dstMin, dstMax, curvedT);
 }
 
-export function getEaseInOutValue(v0: number, v1: number, v2: number, v3: number): number {
-    const t = Math.cos((v0 / v3) * Math.PI);
-    return lerp(v1, v2, 0.5 * (1 - t));
+export function getEaseInOutValue(t: number, dstMin: number = 0.0, dstMax: number = 1.0, duration: number = 1.0): number {
+    const curvedT = Math.cos((t / duration) * Math.PI);
+    return lerp(dstMin, dstMax, 0.5 * (1 - curvedT));
 }
 
 export function turnVecToVecCos(dst: vec3, src: ReadonlyVec3, target: ReadonlyVec3, speed: number, up: ReadonlyVec3, upAmount: number): boolean {
@@ -1374,7 +1522,7 @@ export function turnVecToVecCos(dst: vec3, src: ReadonlyVec3, target: ReadonlyVe
         vecKillElement(scratchVec3a, target, src);
         if (!isNearZeroVec3(scratchVec3a, 0.001)) {
             vec3.normalize(scratchVec3a, scratchVec3a);
-            vec3.scale(dst, src, dot);
+            vec3.scale(dst, src, speed);
             vec3.scaleAndAdd(dst, dst, scratchVec3a, Math.sqrt(1.0 - speed ** 2.0));
             vec3.normalize(dst, dst);
             return false;
@@ -1389,6 +1537,21 @@ export function turnVecToVecCos(dst: vec3, src: ReadonlyVec3, target: ReadonlyVe
         vec3.normalize(dst, target);
         return true;
     }
+}
+
+export function turnVecToVecCosOnPlane(dst: vec3, src: ReadonlyVec3, targetAny: ReadonlyVec3, up: ReadonlyVec3, speed: number): boolean {
+    vecKillElement(scratchVec3a, targetAny, up);
+    vec3.normalize(scratchVec3a, scratchVec3a);
+
+    if (isNearZeroVec3(scratchVec3a, 0.001))
+        return false;
+
+    if (speed <= -1.0) {
+        vec3.copy(dst, scratchVec3a);
+        return false;
+    }
+
+    return turnVecToVecCos(dst, src, scratchVec3a, speed, up, 0.02);
 }
 
 function excludeCalcShadowToSensorAll(actor: LiveActor, hitSensor: HitSensor): void {
@@ -1443,4 +1606,161 @@ export class MapObjConnector {
             getMatrixTranslation(actor.translation, dstMtx);
         }
     }
+}
+
+export function declareStarPiece(sceneObjHolder: SceneObjHolder, host: NameObj, count: number): void {
+    sceneObjHolder.create(SceneObj.StarPieceDirector);
+    sceneObjHolder.starPieceDirector!.declare(host, count);
+}
+
+export function addVelocityFromPushHorizon(actor: LiveActor, speed: number, otherSensor: HitSensor, thisSensor: HitSensor): void {
+    vec3.sub(scratchVec3a, thisSensor.center, otherSensor.center);
+    vecKillElement(scratchVec3a, scratchVec3a, actor.gravityVector);
+    normToLength(scratchVec3a, speed);
+    vec3.add(actor.velocity, actor.velocity, scratchVec3a);
+}
+
+export function addVelocityLimit(actor: LiveActor, addVel: ReadonlyVec3): void {
+    const addSpeed = vec3.length(addVel);
+    vec3.normalize(scratchVec3a, scratchVec3a);
+
+    if (isNearZeroVec3(scratchVec3a, 0.001))
+        return;
+
+    const dot = vec3.dot(actor.velocity, scratchVec3a);
+    if (dot < addSpeed)
+        vec3.scaleAndAdd(actor.velocity, actor.velocity, scratchVec3a, (addSpeed - dot));
+}
+
+export function addVelocityFromPush(actor: LiveActor, speed: number, otherSensor: HitSensor, thisSensor: HitSensor): void {
+    vec3.sub(scratchVec3a, thisSensor.center, otherSensor.center);
+    vec3.negate(scratchVec3b, actor.gravityVector);
+
+    if (speed < vec3.dot(actor.velocity, scratchVec3b))
+        vecKillElement(scratchVec3a, scratchVec3a, actor.gravityVector);
+
+    normToLength(scratchVec3a, speed);
+    addVelocityLimit(actor, scratchVec3a);
+}
+
+export function addVelocityToGravity(actor: LiveActor, speed: number): void {
+    vec3.scaleAndAdd(actor.velocity, actor.velocity, actor.gravityVector, speed);
+}
+
+export function calcReboundVelocity(velocity: vec3, faceNormal: ReadonlyVec3, bounce: number, drag: number): void {
+    const dot = vec3.dot(velocity, faceNormal);
+    if (dot < 0.0) {
+        vec3.scaleAndAdd(velocity, velocity, faceNormal, -dot);
+        vec3.scale(velocity, velocity, drag);
+        vec3.scaleAndAdd(velocity, velocity, faceNormal, -dot * bounce);
+    }
+}
+
+export function reboundVelocityFromEachCollision(actor: LiveActor, floorBounce: number, wallBounce: number, ceilingBounce: number, cutoff: number, drag: number = 1.0): boolean {
+    if (!isBinded(actor))
+        return false;
+
+    const fixReaction = getBindedFixReactionVector(actor);
+    if (isNearZeroVec3(fixReaction, 0.001))
+        return false;
+
+    vec3.normalize(scratchVec3, fixReaction);
+    const dot = vec3.dot(scratchVec3, actor.velocity);
+    if (dot >= -cutoff) {
+        if (dot < 0.0)
+            vec3.scaleAndAdd(actor.velocity, actor.velocity, scratchVec3, -dot);
+        return false;
+    } else {
+        vec3.scaleAndAdd(actor.velocity, actor.velocity, scratchVec3, -dot);
+        vec3.scale(actor.velocity, actor.velocity, drag);
+        const reactionAngle = vec3.dot(scratchVec3, actor.gravityVector);
+        const bounce = isFloorPolygonAngle(reactionAngle) ? floorBounce : isWallPolygonAngle(reactionAngle) ? wallBounce : ceilingBounce;
+        vec3.scaleAndAdd(actor.velocity, actor.velocity, scratchVec3, -dot * bounce);
+        return true;
+    }
+}
+
+export function reboundVelocityFromCollision(actor: LiveActor, bounce: number, cutoff: number, drag: number): boolean {
+    return reboundVelocityFromEachCollision(actor, bounce, bounce, bounce, cutoff, drag);
+}
+
+export function restrictVelocity(actor: LiveActor, maxSpeed: number): void {
+    if (vec3.squaredLength(actor.velocity) >= maxSpeed ** 2)
+        normToLength(actor.velocity, maxSpeed);
+}
+
+export function attenuateVelocity(actor: LiveActor, drag: number): void {
+    vec3.scale(actor.velocity, actor.velocity, drag);
+}
+
+export function appearStarPiece(sceneObjHolder: SceneObjHolder, host: NameObj, translation: ReadonlyVec3, count: number, speedRange: number, speedUp: number, skipWaterCheck: boolean = false): void {
+    if (sceneObjHolder.starPieceDirector === null)
+        return;
+    sceneObjHolder.starPieceDirector.appearPiece(sceneObjHolder, host, translation, count, speedRange, speedUp, false, skipWaterCheck);
+}
+
+export function appearStarPieceToDirection(sceneObjHolder: SceneObjHolder, host: NameObj, translation: ReadonlyVec3, direction: ReadonlyVec3, count: number, speedRange: number, speedUp: number, skipWaterCheck: boolean = false): void {
+    if (sceneObjHolder.starPieceDirector === null)
+        return;
+    sceneObjHolder.starPieceDirector.appearPieceToDirection(sceneObjHolder, host, translation, direction, count, speedRange, speedUp, false, skipWaterCheck);
+}
+
+export class FixedPosition {
+    public transformMatrix = mat4.create();
+    public normalizeScale = true;
+    private localTrans = vec3.create();
+    private localRot = vec3.create();
+
+    constructor(private baseMtx: ReadonlyMat4, localTrans: ReadonlyVec3 | null = null, localRot: ReadonlyVec3 | null = null) {
+        if (localTrans !== null)
+            this.setLocalTrans(localTrans);
+        if (localRot !== null)
+            vec3.copy(this.localRot, localRot);
+    }
+
+    public setLocalTrans(localTrans: ReadonlyVec3): void {
+        vec3.copy(this.localTrans, localTrans);
+    }
+
+    public calc(): void {
+        computeModelMatrixR(scratchMatrix, this.localRot[0], this.localRot[1], this.localRot[2]);
+        mat4.mul(this.transformMatrix, this.baseMtx, scratchMatrix);
+        computeModelMatrixT(scratchMatrix, this.localTrans[0], this.localTrans[1], this.localTrans[2]);
+        mat4.mul(this.transformMatrix, this.transformMatrix, scratchMatrix);
+        if (this.normalizeScale)
+            computeMatrixWithoutScale(this.transformMatrix, this.transformMatrix);
+    }
+}
+
+export function sendMsgPushAndKillVelocityToTarget(sceneObjHolder: SceneObjHolder, actor: LiveActor, recvSensor: HitSensor, sendSensor: HitSensor): boolean {
+    if (sendMsgPush(sceneObjHolder, recvSensor, sendSensor)) {
+        vec3.sub(scratchVec3a, sendSensor.center, recvSensor.center);
+        vec3.normalize(scratchVec3a, scratchVec3a);
+        if (vec3.dot(scratchVec3a, actor.velocity) > 0.0)
+            vecKillElement(actor.velocity, actor.velocity, scratchVec3a);
+        return true;
+    } else {
+        return false;
+    }
+}
+
+export function isInDeath(sceneObjHolder: SceneObjHolder, pos: ReadonlyVec3): boolean {
+    return isInAreaObj(sceneObjHolder, 'DeathArea', pos);
+}
+
+export function calcVecToTargetPosH(dst: vec3, actor: LiveActor, targetPos: ReadonlyVec3, h: ReadonlyVec3 = actor.gravityVector): void {
+    vec3.sub(dst, targetPos, actor.translation);
+    vecKillElement(dst, dst, h);
+    vec3.normalize(dst, dst);
+}
+
+export function calcVecToPlayerH(dst: vec3, sceneObjHolder: SceneObjHolder, actor: LiveActor, h: ReadonlyVec3 = actor.gravityVector): void {
+    getPlayerPos(scratchVec3a, sceneObjHolder);
+    calcVecToTargetPosH(dst, actor, scratchVec3a, h);
+}
+
+export function calcVecFromPlayerH(dst: vec3, sceneObjHolder: SceneObjHolder, actor: LiveActor, h: ReadonlyVec3 = actor.gravityVector): void {
+    getPlayerPos(scratchVec3a, sceneObjHolder);
+    calcVecToTargetPosH(dst, actor, scratchVec3a, h);
+    vec3.negate(dst, dst);
 }

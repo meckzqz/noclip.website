@@ -14,6 +14,7 @@ import { SFAAnimationController } from './animation';
 import { DataFetcher } from '../DataFetcher';
 import { SFATextureFetcher } from './textures';
 import { ModelRenderContext, ModelInstance } from './models';
+import { White } from '../Color';
 
 export interface BlockInfo {
     mod: number;
@@ -225,7 +226,7 @@ class MapSceneRenderer extends SFARenderer {
         const modelCtx: ModelRenderContext = {
             sceneCtx,
             showDevGeometry: false,
-            ambienceNum: 0,
+            outdoorAmbientColor: White,
             setupLights: () => {},
         };
 
@@ -284,7 +285,7 @@ export class SwapcircleSceneDesc implements Viewer.SceneDesc {
         const mapRenderer = new MapSceneRenderer(device, animController, materialFactory);
         const texFetcher = await SFATextureFetcher.create(this.gameInfo, context.dataFetcher, true);
         await texFetcher.loadSubdirs(['swapcircle'], context.dataFetcher);
-        const blockFetcher = await SwapcircleBlockFetcher.create(this.gameInfo,context.dataFetcher, device, materialFactory, animController, texFetcher);
+        const blockFetcher = await SwapcircleBlockFetcher.create(this.gameInfo,context.dataFetcher, materialFactory, texFetcher);
         await mapRenderer.create(mapSceneInfo, this.gameInfo, context.dataFetcher, blockFetcher);
 
         // Rotate camera 135 degrees to more reliably produce a good view of the map
@@ -344,7 +345,7 @@ export class AncientMapSceneDesc implements Viewer.SceneDesc {
         };
 
         const mapRenderer = new MapSceneRenderer(device, animController, materialFactory);
-        const blockFetcher = await AncientBlockFetcher.create(this.gameInfo, dataFetcher, device, materialFactory, animController);
+        const blockFetcher = await AncientBlockFetcher.create(this.gameInfo, dataFetcher, materialFactory);
         await mapRenderer.create(mapSceneInfo, this.gameInfo, dataFetcher, blockFetcher);
 
         // Rotate camera 135 degrees to more reliably produce a good view of the map

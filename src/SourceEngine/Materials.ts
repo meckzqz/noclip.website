@@ -6,7 +6,7 @@ import { GfxRenderInst, makeSortKey, GfxRendererLayer, setSortKeyProgramKey } fr
 import { nArray, assert, assertExists } from "../util";
 import { GfxDevice, GfxProgram, GfxMegaStateDescriptor, GfxFrontFaceMode, GfxBlendMode, GfxBlendFactor, GfxTexture, makeTextureDescriptor2D, GfxFormat, GfxSampler, GfxTexFilterMode, GfxMipFilterMode, GfxWrapMode, GfxCullMode } from "../gfx/platform/GfxPlatform";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
-import { mat4, vec4, vec3 } from "gl-matrix";
+import { mat4, vec4, vec3, ReadonlyMat4 } from "gl-matrix";
 import { fillMatrix4x3, fillVec4, fillVec4v, fillMatrix4x2, fillColor, fillVec3v } from "../gfx/helpers/UniformBufferHelpers";
 import { VTF, VTFFlags } from "./VTF";
 import { SourceRenderContext, SourceFileSystem } from "./Main";
@@ -26,6 +26,12 @@ export const enum StaticLightingMode {
     StudioAmbientCube,
 }
 
+export const enum SkinningMode {
+    None,
+    Rigid,
+    Smooth,
+};
+
 export const enum LateBindingTexture {
     FramebufferTexture = 'framebuffer-texture',
 }
@@ -37,11 +43,13 @@ export class MaterialProgramBase extends DeviceProgram {
     public static a_TexCoord = 3;
     public static a_Color = 4;
     public static a_StaticVertexLighting = 5;
+    public static a_BoneWeights = 6;
+    public static a_BoneIDs = 7;
 
     public static ub_SceneParams = 0;
 
     public Common = `
-layout(row_major, std140) uniform ub_SceneParams {
+layout(std140) uniform ub_SceneParams {
     Mat4x4 u_ProjectionView;
     vec4 u_CameraPosWorld;
 };
@@ -56,7 +64,7 @@ vec3 CalcReflection(in vec3 t_NormalWorld, in vec3 t_PositionToEye) {
 }
 
 vec3 CalcNormalWorld(in vec3 t_MapNormal, in vec3 t_Basis0, in vec3 t_Basis1, in vec3 t_Basis2) {
-    return t_MapNormal.xxx * t_Basis0 + t_MapNormal.yyy * t_Basis1 * t_MapNormal.zzz * t_Basis2;
+    return t_MapNormal.xxx * t_Basis0 + t_MapNormal.yyy * t_Basis1 + t_MapNormal.zzz * t_Basis2;
 }
 
 float CalcFresnelTerm(float t_DotProduct) {
@@ -387,6 +395,10 @@ export abstract class BaseMaterial {
         // Nothing by default.
     }
 
+    public setSkinningMode(skinningMode: SkinningMode): void {
+        // Nothing by default.
+    }
+
     public setStaticLightingMode(staticLightingMode: StaticLightingMode): void {
         // Nothing by default.
     }
@@ -573,7 +585,11 @@ export abstract class BaseMaterial {
             this.proxyDriver.update(renderContext, this.entityParams);
     }
 
-    public abstract setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: mat4): void;
+    public abstract setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: ReadonlyMat4 | null): void;
+
+    public setOnRenderInstSkinningParams(renderInst: GfxRenderInst, boneMatrix: ReadonlyMat4[], bonePaletteTable: number[]): void {
+        // Nothing by default.
+    }
 }
 //#endregion
 
@@ -584,8 +600,10 @@ const enum ShaderWorldLightType {
 
 class Material_Generic_Program extends MaterialProgramBase {
     public static ub_ObjectParams = 1;
+    public static ub_SkinningParams = 2;
 
     public static MaxDynamicWorldLights = 2;
+    public static MaxSkinningParamsBoneMatrix = 53;
 
     public both = `
 precision mediump float;
@@ -600,8 +618,11 @@ struct WorldLight {
     // TODO(jstpierre): Spot/Directional Lights
 };
 
-layout(row_major, std140) uniform ub_ObjectParams {
+layout(std140) uniform ub_ObjectParams {
+#if SKINNING_MODE == ${SkinningMode.None}
     Mat4x3 u_ModelMatrix;
+#endif
+
 #ifdef USE_AMBIENT_CUBE
     // TODO(jstpierre): Pack this more efficiently?
     vec4 u_AmbientCube[6];
@@ -627,6 +648,16 @@ layout(row_major, std140) uniform ub_ObjectParams {
     vec4 u_ModulationColor;
     vec4 u_Misc[1];
 };
+
+#if SKINNING_MODE != ${SkinningMode.None}
+layout(std140) uniform ub_SkinningParams {
+#if SKINNING_MODE == ${SkinningMode.Rigid}
+    Mat4x3 u_ModelMatrix;
+#elif SKINNING_MODE == ${SkinningMode.Smooth}
+    Mat4x3 u_BoneMatrix[${Material_Generic_Program.MaxSkinningParamsBoneMatrix}];
+#endif
+};
+#endif
 
 #define u_AlphaTestReference (u_Misc[0].x)
 #define u_DetailBlendFactor  (u_Misc[0].y)
@@ -670,6 +701,10 @@ layout(location = ${MaterialProgramBase.a_Color}) attribute vec4 a_Color;
 #endif
 #ifdef USE_STATIC_VERTEX_LIGHTING
 layout(location = ${MaterialProgramBase.a_StaticVertexLighting}) attribute vec3 a_StaticVertexLighting;
+#endif
+#if SKINNING_MODE == ${SkinningMode.Smooth}
+layout(location = ${MaterialProgramBase.a_BoneWeights}) attribute vec4 a_BoneWeights;
+layout(location = ${MaterialProgramBase.a_BoneIDs}) attribute vec4 a_BoneIndices;
 #endif
 
 #ifdef USE_AMBIENT_CUBE
@@ -752,12 +787,30 @@ vec3 WorldLightCalcAll(in vec3 t_PositionWorld, in vec3 t_NormalWorld) {
 }
 #endif
 
+Mat4x3 WorldFromLocalMatrixCalc() {
+#if SKINNING_MODE == ${SkinningMode.Smooth}
+    // Calculate our per-vertex position.
+    Mat4x3 t_WorldFromLocalMatrix = _Mat4x3(0.0);
+
+    Fma(t_WorldFromLocalMatrix, u_BoneMatrix[int(a_BoneIndices.x)], a_BoneWeights.x);
+    Fma(t_WorldFromLocalMatrix, u_BoneMatrix[int(a_BoneIndices.y)], a_BoneWeights.y);
+    Fma(t_WorldFromLocalMatrix, u_BoneMatrix[int(a_BoneIndices.z)], a_BoneWeights.z);
+    Fma(t_WorldFromLocalMatrix, u_BoneMatrix[int(a_BoneIndices.w)], a_BoneWeights.w);
+
+    return t_WorldFromLocalMatrix;
+#else
+    return u_ModelMatrix;
+#endif
+}
+
 void mainVS() {
-    vec3 t_PositionWorld = Mul(u_ModelMatrix, vec4(a_Position, 1.0));
+    Mat4x3 t_WorldFromLocalMatrix = WorldFromLocalMatrixCalc();
+
+    vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
     gl_Position = Mul(u_ProjectionView, vec4(t_PositionWorld, 1.0));
 
     v_PositionWorld.xyz = t_PositionWorld;
-    vec3 t_NormalWorld = Mul(u_ModelMatrix, vec4(a_Normal.xyz, 0.0));
+    vec3 t_NormalWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Normal.xyz, 0.0));
 
 #ifdef USE_VERTEX_COLOR
     v_Color = a_Color;
@@ -796,7 +849,7 @@ void mainVS() {
 #endif
 
 #ifdef HAS_FULL_TANGENTSPACE
-    vec3 t_TangentSWorld = a_TangentS.xyz;
+    vec3 t_TangentSWorld = Mul(t_WorldFromLocalMatrix, vec4(a_TangentS.xyz, 0.0));
     vec3 t_TangentTWorld = cross(t_TangentSWorld, t_NormalWorld);
 
     v_TangentSpaceBasis0 = t_TangentSWorld * sign(a_TangentS.w);
@@ -1014,6 +1067,7 @@ class Material_Generic extends BaseMaterial {
     private wantsStaticVertexLighting = false;
     private wantsDynamicVertexLighting = false;
     private wantsAmbientCube = false;
+    private skinningMode = SkinningMode.None;
     private shaderType: ShaderType;
 
     private program: Material_Generic_Program;
@@ -1021,6 +1075,12 @@ class Material_Generic extends BaseMaterial {
     private megaStateFlags: Partial<GfxMegaStateDescriptor> = {};
     private sortKeyBase: number = 0;
     private textureMapping: TextureMapping[] = nArray(7, () => new TextureMapping());
+
+    public setSkinningMode(skinningMode: SkinningMode): void {
+        this.skinningMode = skinningMode;
+        this.program.setDefineString('SKINNING_MODE', '' + skinningMode);
+        this.gfxProgram = null;
+    }
 
     public setStaticLightingMode(staticLightingMode: StaticLightingMode): void {
         if (this.shaderType === ShaderType.VertexLitGeneric) {
@@ -1104,6 +1164,7 @@ class Material_Generic extends BaseMaterial {
             this.shaderType = ShaderType.Unknown;
 
         this.program = new Material_Generic_Program();
+        this.setSkinningMode(SkinningMode.None);
 
         if (this.paramGetVTF('$detail') !== null) {
             this.wantsDetail = true;
@@ -1197,14 +1258,24 @@ class Material_Generic extends BaseMaterial {
         this.paramGetTexture('$envmap').fillTextureMapping(this.textureMapping[6], this.paramGetInt('$envmapframe'));
     }
 
-    public setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: mat4): void {
+    private fillModelMatrix(d: Float32Array, offs: number, modelMatrix: ReadonlyMat4 | null): number {
+        let origOffs = offs;
+
+        // Rigid/smooth skinning do not use the model matrix.
+        if (this.skinningMode === SkinningMode.None)
+            offs += fillMatrix4x3(d, offs, modelMatrix!);
+
+        return offs - origOffs;
+    }
+
+    public setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: ReadonlyMat4 | null): void {
         assert(this.isMaterialLoaded());
         this.updateTextureMappings();
         this.recacheProgram(renderContext.device, renderContext.cache);
 
         let offs = renderInst.allocateUniformBuffer(Material_Generic_Program.ub_ObjectParams, 128);
         const d = renderInst.mapUniformBufferF32(Material_Generic_Program.ub_ObjectParams);
-        offs += fillMatrix4x3(d, offs, modelMatrix);
+        offs += this.fillModelMatrix(d, offs, modelMatrix);
 
         if (this.wantsAmbientCube) {
             const ambientCube = assertExists(assertExists(this.entityParams).ambientCube);
@@ -1261,6 +1332,31 @@ class Material_Generic extends BaseMaterial {
         renderInst.sortKey = this.sortKeyBase;
     }
 
+    public setOnRenderInstSkinningParams(renderInst: GfxRenderInst, boneMatrix: ReadonlyMat4[], bonePaletteTable: number[]): void {
+        if (this.skinningMode === SkinningMode.Smooth) {
+            assert(bonePaletteTable.length <= Material_Generic_Program.MaxSkinningParamsBoneMatrix);
+
+            let offs = renderInst.allocateUniformBuffer(Material_Generic_Program.ub_SkinningParams, 16 * Material_Generic_Program.MaxSkinningParamsBoneMatrix);
+            const d = renderInst.mapUniformBufferF32(Material_Generic_Program.ub_SkinningParams);
+
+            mat4.identity(scratchMatrix);
+            for (let i = 0; i < Material_Generic_Program.MaxSkinningParamsBoneMatrix; i++) {
+                const boneIndex = bonePaletteTable[i];
+                const m = boneIndex !== undefined ? boneMatrix[boneIndex] : scratchMatrix;
+                offs += fillMatrix4x3(d, offs, m);
+            }
+        } else if (this.skinningMode === SkinningMode.Rigid) {
+            assert(bonePaletteTable.length === 1);
+
+            let offs = renderInst.allocateUniformBuffer(Material_Generic_Program.ub_SkinningParams, 16);
+            const d = renderInst.mapUniformBufferF32(Material_Generic_Program.ub_SkinningParams);
+
+            const boneIndex = bonePaletteTable[0];
+            const m = boneMatrix[boneIndex];
+            offs += fillMatrix4x3(d, offs, m);
+        }
+    }
+
     public destroy(device: GfxDevice): void {
     }
 }
@@ -1274,7 +1370,7 @@ precision mediump float;
 
 ${this.Common}
 
-layout(row_major, std140) uniform ub_ObjectParams {
+layout(std140) uniform ub_ObjectParams {
     Mat4x3 u_ModelMatrix;
     Mat4x2 u_Texture2Transform;
     vec4 u_ModulationColor;
@@ -1349,13 +1445,13 @@ class Material_UnlitTwoTexture extends BaseMaterial {
         this.paramGetTexture('$texture2').fillTextureMapping(this.textureMapping[1], this.paramGetInt('$frame2'));
     }
 
-    public setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: mat4): void {
+    public setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: ReadonlyMat4 | null): void {
         assert(this.isMaterialLoaded());
         this.updateTextureMappings();
 
         let offs = renderInst.allocateUniformBuffer(UnlitTwoTextureProgram.ub_ObjectParams, 64);
         const d = renderInst.mapUniformBufferF32(UnlitTwoTextureProgram.ub_ObjectParams);
-        offs += fillMatrix4x3(d, offs, modelMatrix);
+        offs += fillMatrix4x3(d, offs, modelMatrix!);
         offs += this.paramFillTextureMatrix(d, offs, '$texture2transform');
         offs += this.paramFillColor(d, offs, '$color', '$alpha');
 
@@ -1384,7 +1480,7 @@ precision mediump float;
 
 ${this.Common}
 
-layout(row_major, std140) uniform ub_ObjectParams {
+layout(std140) uniform ub_ObjectParams {
     Mat4x3 u_ModelMatrix;
 #ifdef USE_TEXSCROLL
     vec4 u_TexScroll;
@@ -1423,7 +1519,7 @@ void mainVS() {
     v_PositionWorld.xyz = t_PositionWorld;
     vec3 t_NormalWorld = Mul(u_ModelMatrix, vec4(a_Normal.xyz, 0.0));
 
-    vec3 t_TangentSWorld = a_TangentS.xyz;
+    vec3 t_TangentSWorld = Mul(u_ModelMatrix, vec4(a_TangentS.xyz, 0.0));
     vec3 t_TangentTWorld = cross(t_TangentSWorld, t_NormalWorld);
 
     v_TangentSpaceBasis0 = t_TangentSWorld * a_TangentS.w;
@@ -1534,13 +1630,13 @@ class Material_Water extends BaseMaterial {
         this.paramGetTexture('$envmap').fillTextureMapping(this.textureMapping[1], this.paramGetInt('$envmapframe'));
     }
 
-    public setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: mat4): void {
+    public setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: ReadonlyMat4 | null): void {
         assert(this.isMaterialLoaded());
         this.updateTextureMappings();
 
         let offs = renderInst.allocateUniformBuffer(WaterCheapMaterialProgram.ub_ObjectParams, 64);
         const d = renderInst.mapUniformBufferF32(WaterCheapMaterialProgram.ub_ObjectParams);
-        offs += fillMatrix4x3(d, offs, modelMatrix);
+        offs += fillMatrix4x3(d, offs, modelMatrix!);
 
         if (this.wantsTexScroll) {
             const scroll1x = this.paramGetVector('$scroll1').get(0) * renderContext.globalTime;
@@ -1573,7 +1669,7 @@ precision mediump float;
 
 ${this.Common}
 
-layout(row_major, std140) uniform ub_ObjectParams {
+layout(std140) uniform ub_ObjectParams {
     Mat4x3 u_ModelMatrix;
     vec4 u_RefractTint;
 #ifdef USE_ENVMAP
@@ -1613,7 +1709,7 @@ void mainVS() {
     v_PositionWorld.xyz = t_PositionWorld;
     vec3 t_NormalWorld = Mul(u_ModelMatrix, vec4(a_Normal.xyz, 0.0));
 
-    vec3 t_TangentSWorld = a_TangentS.xyz;
+    vec3 t_TangentSWorld = Mul(u_ModelMatrix, vec4(a_TangentS.xyz, 0.0));
     vec3 t_TangentTWorld = cross(t_TangentSWorld, t_NormalWorld);
 
     v_TangentSpaceBasis0 = t_TangentSWorld * a_TangentS.w;
@@ -1741,13 +1837,13 @@ class Material_Refract extends BaseMaterial {
         this.paramGetTexture('$envmap').fillTextureMapping(this.textureMapping[2], this.paramGetInt('$envmapframe'));
     }
 
-    public setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: mat4): void {
+    public setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, modelMatrix: ReadonlyMat4 | null): void {
         assert(this.isMaterialLoaded());
         this.updateTextureMappings();
 
         let offs = renderInst.allocateUniformBuffer(RefractMaterialProgram.ub_ObjectParams, 64);
         const d = renderInst.mapUniformBufferF32(RefractMaterialProgram.ub_ObjectParams);
-        offs += fillMatrix4x3(d, offs, modelMatrix);
+        offs += fillMatrix4x3(d, offs, modelMatrix!);
 
         offs += this.paramFillColor(d, offs, '$refracttint', '$refractamount');
 
@@ -1962,7 +2058,7 @@ export class LightCache {
     private worldLights: LightCacheWorldLight[] = nArray(Material_Generic_Program.MaxDynamicWorldLights, () => new LightCacheWorldLight());
 
     constructor(bspfile: BSPFile, private pos: vec3, bbox: AABB) {
-        this.leaf = bspfile.findLeafForPoint(pos);
+        this.leaf = bspfile.findLeafIdxForPoint(pos);
         assert(this.leaf >= 0);
 
         this.envCubemap = findEnvCubemapTexture(bspfile, pos);
@@ -1981,9 +2077,6 @@ export class LightCache {
             const ratio = worldLightDistanceFalloff(light, scratchVec3);
             const intensity = ratio * vec3.dot(light.intensity, ntscGrayscale);
             // TODO(jstpierre): Angle attenuation.
-
-            if (window.debug)
-                console.log(i, vec3.length(scratchVec3), ratio, intensity);
 
             if (intensity <= 0.0)
                 continue;

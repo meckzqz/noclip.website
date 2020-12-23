@@ -3,12 +3,12 @@ import { vec3, mat4, ReadonlyVec3, ReadonlyMat4 } from "gl-matrix";
 import { JMapInfoIter, getJMapInfoScale, getJMapInfoArg0, getJMapInfoArg1, getJMapInfoArg2 } from "./JMapInfo";
 import { SceneObjHolder, getObjectName, SceneObj } from "./Main";
 import { LiveActor, ZoneAndLayer, getJMapInfoTrans, getJMapInfoRotate } from "./LiveActor";
-import { fallback, assertExists, nArray } from "../util";
+import { fallback, assertExists, nArray, spliceBisectRight } from "../util";
 import { computeModelMatrixR, computeModelMatrixSRT, MathConstants, getMatrixAxisX, getMatrixAxisY, getMatrixTranslation, isNearZeroVec3, isNearZero, getMatrixAxisZ, Vec3Zero, setMatrixTranslation, transformVec3Mat4w1, lerp } from "../MathHelpers";
 import { calcMtxAxis, calcPerpendicFootToLineInside, getRandomFloat, useStageSwitchWriteA, useStageSwitchWriteB, isValidSwitchA, isValidSwitchB, connectToSceneMapObjMovement, useStageSwitchSleep, isOnSwitchA, isOnSwitchB, makeAxisVerticalZX, makeMtxUpNoSupportPos, vecKillElement } from "./ActorUtil";
 import { NameObj } from "./NameObj";
 import { ViewerRenderInput } from "../viewer";
-import { drawWorldSpaceVector, getDebugOverlayCanvas2D } from "../DebugJunk";
+import { drawWorldSpaceLine, drawWorldSpaceVector, getDebugOverlayCanvas2D } from "../DebugJunk";
 import { Red, Green } from "../Color";
 import { RailRider } from "./RailRider";
 
@@ -28,7 +28,6 @@ export class GravityInfo {
     public gravity: PlanetGravity;
 }
 
-const scratchGravTotal = vec3.create();
 const scratchGravLocal = vec3.create();
 export class PlanetGravityManager extends NameObj {
     public gravities: PlanetGravity[] = [];
@@ -37,10 +36,10 @@ export class PlanetGravityManager extends NameObj {
         super(sceneObjHolder, 'PlanetGravityManager');
     }
 
-    public calcTotalGravityVector(dst: vec3 | null, gravityInfo: GravityInfo | null, pos: ReadonlyVec3, gravityTypeMask: GravityTypeMask, attachmentFilter: any): boolean {
+    public calcTotalGravityVector(dst: vec3, gravityInfo: GravityInfo | null, pos: ReadonlyVec3, gravityTypeMask: GravityTypeMask, hostFilter: NameObj | null): boolean {
         let bestPriority = -1;
         let bestMag = -1.0;
-        vec3.set(scratchGravTotal, 0, 0, 0);
+        vec3.zero(dst);
 
         for (let i = 0; i < this.gravities.length; i++) {
             const gravity = this.gravities[i];
@@ -54,7 +53,7 @@ export class PlanetGravityManager extends NameObj {
                 continue;
 
             if (gravity.priority < bestPriority)
-                continue;
+                break;
 
             if (!gravity.calcGravity(scratchGravLocal, pos))
                 continue;
@@ -64,12 +63,12 @@ export class PlanetGravityManager extends NameObj {
             let newBest = false;
             if (gravity.priority === bestPriority) {
                 // Combine the two.
-                vec3.add(scratchGravTotal, scratchGravTotal, scratchGravLocal);
+                vec3.add(dst, dst, scratchGravLocal);
                 if (mag > bestMag)
                     newBest = true;
             } else {
                 // Overwrite with the new best gravity.
-                vec3.copy(scratchGravTotal, scratchGravLocal);
+                vec3.copy(dst, scratchGravLocal);
                 bestPriority = gravity.priority;
                 newBest = true;
             }
@@ -78,18 +77,19 @@ export class PlanetGravityManager extends NameObj {
                 vec3.copy(gravityInfo.direction, scratchGravLocal);
                 gravityInfo.gravity = gravity;
                 gravityInfo.priority = gravity.priority;
+                bestMag = mag;
             }
         }
 
-        if (dst !== null)
-            vec3.normalize(dst, scratchGravTotal);
+        vec3.normalize(dst, dst);
 
         return bestPriority >= 0;
     }
 
     public registerGravity(gravity: PlanetGravity): void {
-        // TODO(jstpierre): Sort by priority
-        this.gravities.push(gravity);
+        spliceBisectRight(this.gravities, gravity, (a, b) => {
+            return b.priority - a.priority;
+        });
     }
 }
 
@@ -160,8 +160,7 @@ abstract class PlanetGravity {
 
     protected abstract calcOwnGravityVector(dst: vec3, pos: ReadonlyVec3): number;
 
-    // TODO(jstpierre): I don't think this is ever called with a non-identity matrix, so I'm excluding
-    // the parameter for now...
+    // TODO(jstpierre): BaseMatrixFollower
     protected updateMtx(): void {
     }
 
@@ -247,21 +246,21 @@ function generateRandomPointInCylinder(dst: vec3, pos: ReadonlyVec3, up: Readonl
 }
 
 const enum ParallelGravityRangeType { Sphere, Box, Cylinder }
-
+const enum ParallelGravityDistanceCalcType { None = -1, X, Y, Z }
 class ParallelGravity extends PlanetGravity {
     private rangeType = ParallelGravityRangeType.Sphere;
-    private baseDistance: number = 2000.0;
-    private cylinderRadius: number = 500.0;
-    private cylinderHeight: number = 1000.0;
+    private baseDistance = 2000.0;
+    private cylinderRadius = 500.0;
+    private cylinderHeight = 1000.0;
     private boxMtx: mat4 | null = null;
     private boxExtentsSq: vec3 | null = null;
     private planeNormal = vec3.create();
     private pos = vec3.create();
-    private distanceCalcType: number = -1;
+    private distanceCalcType = ParallelGravityDistanceCalcType.None;
 
-    public setPlane(normal: ReadonlyVec3, translation: ReadonlyVec3): void {
+    public setPlane(normal: ReadonlyVec3, pos: ReadonlyVec3): void {
         vec3.normalize(this.planeNormal, normal);
-        vec3.copy(this.pos, translation);
+        vec3.copy(this.pos, pos);
     }
 
     public setBaseDistance(v: number): void {
@@ -276,9 +275,9 @@ class ParallelGravity extends PlanetGravity {
         this.rangeType = rangeType;
     }
 
-    public setRangeCylinder(scaleX: number, scaleY: number): void {
-        this.cylinderRadius = scaleX;
-        this.cylinderHeight = scaleY;
+    public setRangeCylinder(radius: number, height: number): void {
+        this.cylinderRadius = radius;
+        this.cylinderHeight = height;
     }
 
     public setRangeBox(mtx: ReadonlyMat4): void {
@@ -332,13 +331,13 @@ class ParallelGravity extends PlanetGravity {
         if (dotZ < -extentsSq[2] || dotZ > extentsSq[2])
             return -1;
 
-        if (this.distanceCalcType === -1)
+        if (this.distanceCalcType === ParallelGravityDistanceCalcType.None)
             return this.baseDistance;
-        else if (this.distanceCalcType === 0)
+        else if (this.distanceCalcType === ParallelGravityDistanceCalcType.X)
             return this.baseDistance + (Math.abs(dotX) / Math.sqrt(extentsSq[0]));
-        else if (this.distanceCalcType === 1)
+        else if (this.distanceCalcType === ParallelGravityDistanceCalcType.Y)
             return this.baseDistance + (Math.abs(dotY) / Math.sqrt(extentsSq[1]));
-        else if (this.distanceCalcType === 2)
+        else if (this.distanceCalcType === ParallelGravityDistanceCalcType.Z)
             return this.baseDistance + (Math.abs(dotZ) / Math.sqrt(extentsSq[2]));
         else
             throw "whoops";
@@ -929,10 +928,10 @@ class DiskGravity extends PlanetGravity {
         this.validCos = Math.cos(theta);
 
         // Orthonormalize the side direction.
-        // NOTE(jstpierre): I'm quite sure sideDirection and segmentDirection will already be orthonormal...
+        // NOTE(jstpierre): I'm quite sure sideDirection and localDirection will already be orthonormal...
         vecKillElement(scratchVec3b, this.sideDirection, this.localDirection);
 
-        mat4.fromRotation(scratchMatrix, theta, this.sideDirection);
+        mat4.fromRotation(scratchMatrix, theta, this.localDirection);
         vec3.transformMat4(this.sideDirectionOrtho, scratchVec3b, scratchMatrix);
     }
 
@@ -997,9 +996,10 @@ class DiskGravity extends PlanetGravity {
     }
 }
 
+const enum DiskTorusGravityEdgeType { None, Inside, Outside, Both }
 class DiskTorusGravity extends PlanetGravity {
     private bothSide = false;
-    private edgeType = 3;
+    private edgeType = DiskTorusGravityEdgeType.Both;
     private diskRadius = 0;
     private radius = 2000.0;
     private position = vec3.create();
@@ -1012,7 +1012,7 @@ class DiskTorusGravity extends PlanetGravity {
         this.bothSide = v;
     }
 
-    public setEdgeType(v: number): void {
+    public setEdgeType(v: DiskTorusGravityEdgeType): void {
         this.edgeType = v;
     }
 
@@ -1058,7 +1058,7 @@ class DiskTorusGravity extends PlanetGravity {
 
         let dist: number;
         if (length >= this.worldRadius) {
-            if (this.edgeType === 0 || this.edgeType === 1)
+            if (this.edgeType === DiskTorusGravityEdgeType.None || this.edgeType === DiskTorusGravityEdgeType.Inside)
                 return -1;
 
             vec3.scaleAndAdd(scratchVec3a, this.worldPosition, scratchVec3b, this.worldRadius);
@@ -1074,7 +1074,7 @@ class DiskTorusGravity extends PlanetGravity {
 
             dist = Math.abs(dot);
         } else {
-            if (this.edgeType === 0 || this.edgeType === 2)
+            if (this.edgeType === DiskTorusGravityEdgeType.None || this.edgeType === DiskTorusGravityEdgeType.Outside)
                 return -1;
 
             vec3.scaleAndAdd(scratchVec3a, this.worldPosition, scratchVec3b, this.worldRadius - this.diskRadius);
@@ -1096,7 +1096,7 @@ class DiskTorusGravity extends PlanetGravity {
     }
 }
 
-export class ConeGravity extends PlanetGravity {
+class ConeGravity extends PlanetGravity {
     public enableBottom: boolean = false;
     public topCutRate: number = 0.0;
     private mtx = mat4.create();
@@ -1259,7 +1259,7 @@ class WireGravity extends PlanetGravity {
         let bestSquaredDist = Infinity;
 
         for (let i = 0; i < this.points.length - 1; i++) {
-            calcPerpendicFootToLineInside(scratchVec3a, pos, this.points[i], this.points[i + 1]);
+            calcPerpendicFootToLineInside(scratchVec3a, pos, this.points[i], this.points[i + 1], scratchVec3h);
 
             const squaredDist = vec3.squaredDistance(scratchVec3a, pos);
             if (squaredDist < bestSquaredDist) {
@@ -1278,6 +1278,12 @@ class WireGravity extends PlanetGravity {
     }
 
     protected generateOwnRandomPoint(dst: vec3): void {
+    }
+
+    public drawDebug(sceneObjHolder: SceneObjHolder, viewerInput: ViewerRenderInput): void {
+        for (let i = 0; i < this.points.length - 1; i++) {
+            drawWorldSpaceLine(getDebugOverlayCanvas2D(), viewerInput.camera.clipFromWorldMatrix, this.points[i], this.points[i + 1]);
+        }
     }
 }
 
@@ -1402,6 +1408,11 @@ export function createGlobalPlaneInCylinderGravityObj(zoneAndLayer: ZoneAndLayer
     gravity.setPlane(scratchVec3a, scratchVec3b);
     getJMapInfoScale(scratchVec3a, infoIter);
     gravity.setRangeCylinder(500.0 * scratchVec3a[0], 500.0 * scratchVec3a[1]);
+
+    // PlaneInCylinderGravityCreator::settingFromJMapArgs
+    const arg0 = fallback(getJMapInfoArg0(infoIter), -1);
+    if (arg0 >= 0)
+        gravity.setBaseDistance(arg0);
 
     settingGravityParamFromJMap(gravity, infoIter);
     gravity.updateIdentityMtx();
@@ -1568,7 +1579,7 @@ export function createGlobalDiskTorusGravityObj(zoneAndLayer: ZoneAndLayer, scen
 
     // DiskTorusGravityCreator::settingFromJMapArgs
     const arg0 = fallback(getJMapInfoArg0(infoIter), -1);
-    const arg1 = fallback(getJMapInfoArg1(infoIter), -1);
+    const arg1: DiskTorusGravityEdgeType = fallback(getJMapInfoArg1(infoIter), -1);
     const arg2 = fallback(getJMapInfoArg2(infoIter), -1);
 
     gravity.setBothSide(arg0 !== 0);

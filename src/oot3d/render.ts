@@ -85,12 +85,12 @@ abstract class DMPProgram extends DeviceProgram {
 
     public static BindingsDefinition = `
 // Expected to be constant across the entire scene.
-layout(row_major, std140) uniform ub_SceneParams {
+layout(std140) uniform ub_SceneParams {
     Mat4x4 u_Projection;
 };
 
 // Expected to change with each material.
-layout(row_major, std140) uniform ub_MaterialParams {
+layout(std140) uniform ub_MaterialParams {
     vec4 u_ConstantColor[6];
     Mat4x3 u_TexMtx[3];
     vec4 u_MatMisc[1];
@@ -98,7 +98,7 @@ layout(row_major, std140) uniform ub_MaterialParams {
 
 #define u_DepthOffset    (u_MatMisc[0].x)
 
-layout(row_major, std140) uniform ub_PrmParams {
+layout(std140) uniform ub_PrmParams {
     Mat4x3 u_BoneMatrix[16];
     vec4 u_PrmMisc[2];
 };

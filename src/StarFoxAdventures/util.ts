@@ -1,9 +1,7 @@
 import ArrayBufferSlice from '../ArrayBufferSlice';
-import { mat4, vec3, quat } from 'gl-matrix';
-import { Color } from '../Color';
+import { mat4, vec3, quat, ReadonlyMat4 } from 'gl-matrix';
 import { Camera, computeViewMatrix } from '../Camera';
 import { getMatrixTranslation } from '../MathHelpers';
-import { SceneRenderContext } from './render';
 
 export function dataSubarray(data: DataView, byteOffset: number, byteLength?: number): DataView {
     return new DataView(data.buffer, data.byteOffset + byteOffset, byteLength);
@@ -40,6 +38,15 @@ export function mat4SetRow(mtx: mat4, row: number, m0: number, m1: number, m2: n
     mtx[4 + row] = m1;
     mtx[8 + row] = m2;
     mtx[12 + row] = m3;
+}
+
+export function mat4SetCol(mtx: mat4, col: number, m0: number, m1: number, m2: number, m3: number) {
+    // mat4's are Float32Arrays in column-major order
+    const i = 4 * col;
+    mtx[i] = m0;
+    mtx[i + 1] = m1;
+    mtx[i + 2] = m2;
+    mtx[i + 3] = m3;
 }
 
 // Because I'm sick of column-major...
@@ -227,15 +234,23 @@ export function getCamPos(v: vec3, camera: Camera): void {
     getMatrixTranslation(v, camera.worldMatrix);
 }
 
-export function computeModelView(dst: mat4, camera: Camera, modelMatrix: mat4): void {
+export function computeModelView(dst: mat4, camera: Camera, modelMatrix: ReadonlyMat4): void {
     computeViewMatrix(dst, camera);
     mat4.mul(dst, dst, modelMatrix);
 }
 
-export interface ViewState {
-    sceneCtx: SceneRenderContext;
-    modelViewMtx: mat4;
-    invModelViewMtx: mat4;
-    outdoorAmbientColor: Color;
-    furLayer: number;
+export function setInt8Clamped(data: DataView, byteOffset: number, value: number) {
+    if (value < -128)
+        value = -128;
+    else if (value > 127)
+        value = 127;
+    data.setInt8(byteOffset, value);
+}
+
+export function setInt16Clamped(data: DataView, byteOffset: number, value: number, littleEndian?: boolean) {
+    if (value < -32768)
+        value = -32768;
+    else if (value > 32767)
+        value = 32767;
+    data.setInt16(byteOffset, value, littleEndian);
 }

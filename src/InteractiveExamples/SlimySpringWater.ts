@@ -1,5 +1,5 @@
 
-import { mat4, vec3 } from 'gl-matrix';
+import { mat4, quat, vec3 } from 'gl-matrix';
 
 import { SceneGfx, ViewerRenderInput } from '../viewer';
 
@@ -208,22 +208,25 @@ class FakeWaterModelInstance {
         }
 
         // Replace the alpha test section with dynamic alpha test based on s_kColor3.
-        // TODO(jstpierre): Dynamic alpha reference might make perfect sense to have in core one day...
         material.alphaTest.op = GX.AlphaOp.OR;
+        material.alphaTest.compareA = GX.CompareType.GEQUAL;
+        material.alphaTest.compareB = GX.CompareType.LEQUAL;
+
+        material.hasDynamicAlphaTest = true;
+        materialHelper.calcMaterialParamsBufferSize();
         materialHelper.createProgram();
-        // @ts-ignore
-        const program = materialHelper.program;
-        program.frag = program.frag.replace(/bool t_AlphaTestA = .+;/, 'bool t_AlphaTestA = t_PixelOut.a >= s_kColor3.r;');
-        program.frag = program.frag.replace(/bool t_AlphaTestB = .+;/, 'bool t_AlphaTestB = t_PixelOut.a <= s_kColor3.g;');
 
         this.k3.r = materialHelper.material.alphaTest.referenceA;
         this.k3.g = materialHelper.material.alphaTest.referenceB;
         this.c2.a = 0.0;
 
-        this.materialInstance.setColorOverride(ColorKind.K3, this.k3);
         this.materialInstance.setColorOverride(ColorKind.K2, this.k2);
         this.materialInstance.setColorOverride(ColorKind.C1, this.c1);
         this.materialInstance.setColorOverride(ColorKind.C2, this.c2);
+        this.materialInstance.materialData.fillMaterialParamsCallback = (materialParams) => {
+            materialParams.u_DynamicAlphaRefA = this.k3.r;
+            materialParams.u_DynamicAlphaRefB = this.k3.g;
+        };
 
         computeModelMatrixS(this.modelInstance.modelMatrix, 500.0);
     }
@@ -347,7 +350,7 @@ export class SlimySpringWaterDesc implements SceneDesc {
             // Append a fake joint for the grass. This is disgusting.
             const transform = new JointTransformInfo();
             vec3.set(transform.scale, 1.0, 0.2, 1.0);
-            vec3.set(transform.rotation, 0.0, 0.0, 0.0);
+            quat.identity(transform.rotation);
             vec3.set(transform.translation, 0.0, 238.0, 0.0);
             bmd.jnt1.joints.push({ name: 'yikes', calcFlags: 0, transform, bbox: new AABB(), boundingSphereRadius: 1000 });
             bmd.drw1.matrixDefinitions.push({ kind: DRW1MatrixKind.Joint, jointIndex: 1 });

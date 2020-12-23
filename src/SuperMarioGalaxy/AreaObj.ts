@@ -8,23 +8,23 @@ import { AABB } from "../Geometry";
 import { NameObj } from "./NameObj";
 import { vecKillElement } from "./ActorUtil";
 import { StageSwitchCtrl, createStageSwitchCtrl, getSwitchWatcherHolder, SwitchFunctorEventListener } from "./Switch";
-import { drawWorldSpaceAABB, getDebugOverlayCanvas2D } from "../DebugJunk";
+import { drawWorldSpaceAABB, drawWorldSpaceCylinder, getDebugOverlayCanvas2D } from "../DebugJunk";
 
 interface AreaFormBase {
     // TODO(jstpierre): followMtx
     isInVolume(v: ReadonlyVec3): boolean;
+    debugDraw(sceneObjHolder: SceneObjHolder): void;
 }
 
 export const enum AreaFormType {
     Cube,
-    CubeGround,
+    OriginCube,
     Sphere,
     Cylinder,
     Bowl,
 }
 
 const scratchVec3a = vec3.create();
-const scratchVec3b = vec3.create();
 const scratchMatrix = mat4.create();
 
 function makeWorldMtxFromPlacement(dst: mat4, sceneObjHolder: SceneObjHolder, infoIter: JMapInfoIter): void {
@@ -58,7 +58,7 @@ class AreaFormCube implements AreaFormBase {
         this.aabb.maxY =  0.5 * scratchVec3a[1] * 1000;
         this.aabb.maxZ =  0.5 * scratchVec3a[2] * 1000;
 
-        if (type === AreaFormType.CubeGround) {
+        if (type === AreaFormType.OriginCube) {
             this.aabb.minY += 0.5 * scratchVec3a[1] * 1000;
             this.aabb.maxY += 0.5 * scratchVec3a[1] * 1000;
         }
@@ -103,6 +103,9 @@ class AreaFormSphere implements AreaFormBase {
         const mag = vec3.squaredLength(scratchVec3a);
         return mag < this.radiusSq;
     }
+
+    public debugDraw(): void {
+    }
 }
 
 class AreaFormCylinder implements AreaFormBase {
@@ -127,20 +130,9 @@ class AreaFormCylinder implements AreaFormBase {
         this.height = scratchVec3a[1] * 500;
     }
 
-    private calcPos(dst: vec3): void {
-        vec3.copy(dst, this.pos);
-    }
-
-    private calcUpVec(dst: vec3): void {
-        vec3.copy(dst, this.upVec);
-    }
-
     public isInVolume(v: ReadonlyVec3): boolean {
-        this.calcPos(scratchVec3a);
-        this.calcUpVec(scratchVec3b);
-
-        vec3.sub(scratchVec3a, scratchVec3a, v);
-        const dot = vecKillElement(scratchVec3a, scratchVec3a, scratchVec3b);
+        vec3.sub(scratchVec3a, v, this.pos);
+        const dot = vecKillElement(scratchVec3a, scratchVec3a, this.upVec);
         if (dot >= 0.0 && dot <= this.height) {
             const mag = vec3.squaredLength(scratchVec3a);
             if (mag < this.radiusSq)
@@ -148,6 +140,10 @@ class AreaFormCylinder implements AreaFormBase {
         }
 
         return false;
+    }
+
+    public debugDraw(sceneObjHolder: SceneObjHolder): void {
+        drawWorldSpaceCylinder(getDebugOverlayCanvas2D(), sceneObjHolder.viewerInput.camera.clipFromWorldMatrix, this.pos, Math.sqrt(this.radiusSq), this.height, this.upVec);
     }
 }
 
@@ -183,6 +179,9 @@ class AreaFormBowl implements AreaFormBase {
 
         return false;
     }
+
+    public debugDraw(): void {
+    }
 }
 
 export class AreaObj extends NameObj {
@@ -197,8 +196,8 @@ export class AreaObj extends NameObj {
 
         if (formType === AreaFormType.Cube)
             this.form = new AreaFormCube(sceneObjHolder, infoIter, AreaFormType.Cube);
-        else if (formType === AreaFormType.CubeGround)
-            this.form = new AreaFormCube(sceneObjHolder, infoIter, AreaFormType.CubeGround);
+        else if (formType === AreaFormType.OriginCube)
+            this.form = new AreaFormCube(sceneObjHolder, infoIter, AreaFormType.OriginCube);
         else if (formType === AreaFormType.Sphere)
             this.form = new AreaFormSphere(sceneObjHolder, infoIter);
         else if (formType === AreaFormType.Cylinder)
@@ -279,4 +278,10 @@ export class AreaObjMgr<T extends AreaObj> extends NameObj {
                 return this.areaObj[i];
         return null;
     }
+}
+
+export function isInAreaObj(sceneObjHolder: SceneObjHolder, managerName: string, pos: ReadonlyVec3): boolean {
+    if (sceneObjHolder.areaObjContainer === null)
+        return false;
+    return sceneObjHolder.areaObjContainer.getAreaObj(managerName, pos) !== null;
 }

@@ -120,7 +120,7 @@ export interface GfxSamplerDescriptor {
 }
 
 export interface GfxAttachmentDescriptor {
-    format: GfxFormat;
+    pixelFormat: GfxFormat;
     width: number;
     height: number;
     numSamples: number;
@@ -260,7 +260,6 @@ export interface GfxDebugGroup {
 }
 
 export interface GfxBugQuirks {
-    rowMajorMatricesBroken: boolean;
 }
 
 export const enum GfxClipSpaceNearZ {
@@ -269,12 +268,12 @@ export const enum GfxClipSpaceNearZ {
 }
 
 export interface GfxVendorInfo {
-    platformString: string;
-    bugQuirks: GfxBugQuirks;
-    glslVersion: string;
-    explicitBindingLocations: boolean;
-    separateSamplerTextures: boolean;
-    clipSpaceNearZ: GfxClipSpaceNearZ;
+    readonly platformString: string;
+    readonly bugQuirks: GfxBugQuirks;
+    readonly glslVersion: string;
+    readonly explicitBindingLocations: boolean;
+    readonly separateSamplerTextures: boolean;
+    readonly clipSpaceNearZ: GfxClipSpaceNearZ;
 }
 
 export type GfxPlatformFramebuffer = WebGLFramebuffer;
@@ -288,12 +287,12 @@ export interface GfxNormalizedViewportCoords {
 }
 
 export interface GfxSwapChain {
-    configureSwapChain(width: number, height: number): void;
-    getDevice(): GfxDevice;
-    getOnscreenTexture(): GfxTexture;
     // WebXR requires presenting to a platform-defined framebuffer, for all that is unholy.
     // This hopefully is less terrible in the future. See https://github.com/immersive-web/webxr/issues/896
-    present(platformFramebuffer?: GfxPlatformFramebuffer, viewport?: GfxNormalizedViewportCoords): void;
+    configureSwapChain(width: number, height: number, platformFramebuffer?: GfxPlatformFramebuffer): void;
+    getDevice(): GfxDevice;
+    getOnscreenTexture(): GfxTexture;
+    present(): void;
     createWebXRLayer(webXRSession: XRSession): XRWebGLLayer;
 }
 
@@ -320,6 +319,22 @@ export interface GfxRenderPass {
 
 export type GfxPass = GfxRenderPass | GfxHostAccessPass;
 
+/**
+ * GfxDevice represents a "virtual GPU"; this is something that, in the abstract, has a bunch of resources
+ * and can execute passes. In the concrete, this is a wrapper around a CanvasWebGL2RenderingContext for the
+ * WebGL 2 backend, or a GPUDevice for the WebGPU backend.
+ *
+ * A bit about the design of this API; all resources are "opaque", meaning you cannot look at the
+ * implementation details or underlying fields of the resources, and most objects cannot have their
+ * creation parameters modified after they are created. So, while buffers and textures can have their
+ * contents changed through data upload passes, they cannot be resized after creation. Create a new object
+ * and destroy the old one if you wish to "resize" it.
+ * 
+ * To upload data to the GPU, create and submit a {@type GfxHostAccessPass}. Note that the pass-based
+ * upload API is a bit ugly, and might change in the future. Specifically, it might be more advantageous
+ * to force a "upload all data at the beginning of the frame" style API, which is practically how the host
+ * access pass is used today for dynamic data management.
+ */
 export interface GfxDevice {
     createBuffer(wordCount: number, usage: GfxBufferUsage, hint: GfxBufferFrequencyHint): GfxBuffer;
     createTexture(descriptor: GfxTextureDescriptor): GfxTexture;
@@ -334,6 +349,11 @@ export interface GfxDevice {
     createRenderPipeline(descriptor: GfxRenderPipelineDescriptor): GfxRenderPipeline;
     createReadback(elemCount: number): GfxReadback;
 
+    /**
+     * Destructors. You *must* call these on resources you create; they will not GC naturally. Call checkForLeaks()
+     * to ensure that you are not leaking any resources. (In the noclip codebase, this happens automatically if you
+     * set loadSceneDelta to 0 and switch scenes).
+     */
     destroyBuffer(o: GfxBuffer): void;
     destroyTexture(o: GfxTexture): void;
     destroySampler(o: GfxSampler): void;

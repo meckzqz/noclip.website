@@ -32,7 +32,7 @@ export class F3DEX_Program extends DeviceProgram {
     public both = `
 precision mediump float;
 
-layout(row_major, std140) uniform ub_SceneParams {
+layout(std140) uniform ub_SceneParams {
     Mat4x4 u_Projection;
 #ifdef LIGHTING
     #ifdef TEXTURE_GEN
@@ -41,12 +41,12 @@ layout(row_major, std140) uniform ub_SceneParams {
 #endif
 };
 
-layout(row_major, std140) uniform ub_DrawParams {
+layout(std140) uniform ub_DrawParams {
     Mat4x3 u_BoneMatrix[BONE_MATRIX_COUNT];
     Mat4x2 u_TexMatrix[2];
 };
 
-uniform ub_CombineParameters {
+layout(std140) uniform ub_CombineParameters {
     vec4 u_PrimColor;
     vec4 u_EnvColor;
 #ifdef EXTRA_COMBINE
@@ -219,8 +219,9 @@ void main() {
             'v_Color.a', 'u_EnvColor.a', '1.0', '0.0'
         ];
 
+        // For now setting the LOD fraction to 0 should be fine since I don't think anyone cares about mipmaps
         const alphaMultInputs: string[] = [
-            'combAlpha', 't_Tex0', 't_Tex1', 'u_PrimColor.a',
+            '0.0' /* LOD_FRACTION */, 't_Tex0', 't_Tex1', 'u_PrimColor.a',
             'v_Color.a', 'u_EnvColor.a', 'u_MiscComb.r', '0.0'
         ];
 
